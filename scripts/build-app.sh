@@ -13,9 +13,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/Celsius"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 # Stamp the latest tag as the version, so a local build doesn't look outdated to the update check.
-PLIST_VERSION="$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" Resources/Info.plist)"
-if VERSION="$(git describe --tags --abbrev=0 2>/dev/null)" \
-  && [[ "$(printf '%s\n%s\n' "${VERSION#v}" "$PLIST_VERSION" | sort -V | tail -1)" != "$PLIST_VERSION" ]]; then
+if VERSION="$(git describe --tags --abbrev=0 2>/dev/null)"; then
   VERSION="${VERSION#v}"
   /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP/Contents/Info.plist"
   /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION" "$APP/Contents/Info.plist"
