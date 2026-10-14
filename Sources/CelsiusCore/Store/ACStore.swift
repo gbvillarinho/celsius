@@ -23,6 +23,7 @@ public final class ACStore {
     public private(set) var deviceCapabilities: ACCapabilities = .fallback
     public private(set) var connection: ConnectionState = .loading
     public private(set) var device: ThinQDevice?
+    public private(set) var devices: [ThinQDevice] = []
     public private(set) var isSending = false
     /// A short-lived error to show in the footer, e.g. a rejected command.
     public private(set) var transientMessage: String?
@@ -112,7 +113,7 @@ public final class ACStore {
     /// A store with fixed data that never touches the network, for snapshots.
     public init(
         previewStatus: ACStatus?, capabilities: ACCapabilities, connection: ConnectionState = .connected,
-        availableUpdate: AppUpdate? = nil, isReconnecting: Bool = false
+        availableUpdate: AppUpdate? = nil, isReconnecting: Bool = false, devices: [ThinQDevice]? = nil
     ) {
         // Limits that keep the given capabilities as they are.
         let limits = TemperatureLimits(
@@ -131,10 +132,12 @@ public final class ACStore {
         self.serverStatus = previewStatus
         self.deviceCapabilities = capabilities
         self.connection = connection
-        self.device = ThinQDevice(
+        let preview = ThinQDevice(
             deviceId: "preview",
             deviceInfo: .init(deviceType: "DEVICE_AIR_CONDITIONER", modelName: "RAC_056905_WW", alias: "Ar-condicionado")
         )
+        self.devices = devices ?? [preview]
+        self.device = self.devices.first ?? preview
     }
 
     // MARK: State
@@ -219,6 +222,23 @@ public final class ACStore {
         if isActive { startPolling(immediately: false) }
     }
 
+    public func selectDevice(id: String) async {
+        guard id != device?.id, let chosen = devices.first(where: { $0.id == id }) else { return }
+        debounceTask?.cancel()
+        refreshSoonTask?.cancel()
+        queue = []
+        overrides = [:]
+        serverStatus = nil
+        deviceCapabilities = .fallback
+        capabilitiesLoaded = false
+        device = chosen
+        settings.deviceID = chosen.id
+        connection = .loading
+        while isRefreshing { await sleep(.milliseconds(50)) }
+        await refresh()
+        if isActive { startPolling(immediately: false) }
+    }
+
     public func signOut() {
         settings.token = nil
         forgetDevice()
@@ -229,6 +249,7 @@ public final class ACStore {
     private func forgetDevice() {
         settings.deviceID = nil
         device = nil
+        devices = []
         serverStatus = nil
         overrides = [:]
         capabilitiesLoaded = false
@@ -248,14 +269,23 @@ public final class ACStore {
 
         let client = makeClient(token, settings.clientID)
         do {
+            var requestedID = ""
             let status = try await retryingTransient {
                 let deviceID = try await resolveDevice(client)
+                requestedID = deviceID
+                var capabilities: ACCapabilities?
                 if !capabilitiesLoaded {
-                    deviceCapabilities = try await client.capabilities(deviceID: deviceID)
+                    capabilities = try await client.capabilities(deviceID: deviceID)
+                }
+                let status = try await client.status(deviceID: deviceID)
+                guard device?.id == deviceID else { throw CancellationError() }
+                if let capabilities {
+                    deviceCapabilities = capabilities
                     capabilitiesLoaded = true
                 }
-                return try await client.status(deviceID: deviceID)
+                return status
             }
+            guard device?.id == requestedID else { return }
             serverStatus = status
             pruneOverrides()
             noteSuccess()
@@ -289,6 +319,7 @@ public final class ACStore {
         guard let chosen = devices.first(where: { $0.id == settings.deviceID }) ?? devices.first else {
             throw ThinQError.api(code: "", message: "No air conditioner found on this LG account")
         }
+        self.devices = devices
         device = chosen
         settings.deviceID = chosen.id
         capabilitiesLoaded = false
