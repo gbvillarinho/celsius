@@ -84,6 +84,7 @@ struct PopoverView: View {
         }
     }
 
+    /// The unit name, which becomes a menu to switch units when the account has several.
     @ViewBuilder
     private var deviceTitle: some View {
         let name = store.device?.displayName ?? "Air conditioner"

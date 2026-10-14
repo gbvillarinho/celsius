@@ -86,6 +86,7 @@ enum Labels {
         }
     }
 
+    /// The unit's name, with the model added when two units share the same name.
     static func deviceName(_ device: ThinQDevice, among devices: [ThinQDevice]) -> String {
         let name = device.displayName
         let twins = devices.filter { $0.displayName == name }

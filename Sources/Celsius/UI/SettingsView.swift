@@ -135,6 +135,7 @@ struct SettingsView: View {
         }
     }
 
+    /// A pop-up to choose which air conditioner the app controls.
     private var devicePicker: some View {
         HStack {
             Text("Unit")
@@ -144,16 +145,12 @@ struct SettingsView: View {
                 options: store.devices.map { (Labels.deviceName($0, among: store.devices), $0.id) },
                 selection: Binding(
                     get: { store.device?.id ?? "" },
-                    set: { id in selectUnit(id) }
+                    set: { id in Task<Void, Never> { await store.selectDevice(id: id) } }
                 )
             )
             .frame(width: Self.unitPopUpWidth)
             .accessibilityLabel("Unit")
         }
-    }
-
-    private func selectUnit(_ id: String) {
-        Task { await store.selectDevice(id: id) }
     }
 
     private static let unitPopUpWidth: CGFloat = 140
