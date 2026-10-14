@@ -66,8 +66,7 @@ struct PopoverView: View {
     private var header: some View {
         HStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 1) {
-                Text(store.device?.displayName ?? "Air conditioner")
-                    .font(.system(size: 13, weight: .semibold))
+                deviceTitle
                 if store.transientMessage != nil || store.isReconnecting || store.connection != .connected {
                     FooterStatus(store: store)
                 } else {
@@ -82,6 +81,44 @@ struct PopoverView: View {
                 .toggleStyle(.switch)
                 .labelsHidden()
                 .disabled(status == nil)
+        }
+    }
+
+    @ViewBuilder
+    private var deviceTitle: some View {
+        let name = store.device?.displayName ?? "Air conditioner"
+        let title = Text(name).font(.system(size: 13, weight: .semibold))
+        if store.devices.count > 1 {
+            Menu {
+                ForEach(store.devices) { device in
+                    Button {
+                        Task { await store.selectDevice(id: device.id) }
+                    } label: {
+                        let label = Labels.deviceName(device, among: store.devices)
+                        if device.id == store.device?.id {
+                            Label(label, systemImage: "checkmark")
+                        } else {
+                            Text(label)
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    title
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(Theme.secondaryText)
+                }
+                .contentShape(Rectangle())
+            }
+            .menuStyle(.button)
+            .buttonStyle(.plain)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .accessibilityLabel("Unit")
+            .accessibilityValue(name)
+        } else {
+            title
         }
     }
 
