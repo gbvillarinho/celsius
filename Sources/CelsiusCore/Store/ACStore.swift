@@ -58,6 +58,8 @@ public final class ACStore {
     /// state is read a few more times, stopping as soon as the target moves.
     static let ecoFollowUpDelays: [Duration] = [.seconds(3), .seconds(3), .seconds(4)]
     static let messageDuration: Duration = .seconds(4)
+    /// How often a unit switch checks whether the read for the previous unit has finished.
+    static let switchPollInterval: Duration = .milliseconds(50)
     /// Waits before each retry of a read that failed in a way that may pass on its own.
     static let readRetryDelays: [Duration] = [.milliseconds(500), .milliseconds(1500)]
     /// Consecutive failed refreshes before the UI says the connection is lost.
@@ -222,6 +224,10 @@ public final class ACStore {
         if isActive { startPolling(immediately: false) }
     }
 
+    /// Makes another air conditioner on the account the active one and reads its state.
+    ///
+    /// Everything tied to the previous unit is dropped on purpose: commands still waiting to be sent and
+    /// optimistic overrides would otherwise be applied to (or shown for) the wrong device.
     public func selectDevice(id: String) async {
         guard id != device?.id, let chosen = devices.first(where: { $0.id == id }) else { return }
         debounceTask?.cancel()
@@ -234,7 +240,7 @@ public final class ACStore {
         device = chosen
         settings.deviceID = chosen.id
         connection = .loading
-        while isRefreshing { await sleep(.milliseconds(50)) }
+        while isRefreshing { await sleep(Self.switchPollInterval) }
         await refresh()
         if isActive { startPolling(immediately: false) }
     }
@@ -269,10 +275,8 @@ public final class ACStore {
 
         let client = makeClient(token, settings.clientID)
         do {
-            var requestedID = ""
             let status = try await retryingTransient {
                 let deviceID = try await resolveDevice(client)
-                requestedID = deviceID
                 var capabilities: ACCapabilities?
                 if !capabilitiesLoaded {
                     capabilities = try await client.capabilities(deviceID: deviceID)
@@ -285,7 +289,6 @@ public final class ACStore {
                 }
                 return status
             }
-            guard device?.id == requestedID else { return }
             serverStatus = status
             pruneOverrides()
             noteSuccess()
