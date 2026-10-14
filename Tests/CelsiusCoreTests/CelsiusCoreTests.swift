@@ -213,14 +213,33 @@ private func stubTransport(
 
 // MARK: - Store
 
+final class Gate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var requested = false
+    private var isOpen = false
+
+    func markRequested() { lock.withLock { requested = true } }
+    func open() { lock.withLock { isOpen = true } }
+    func waitUntilRequested() async {
+        while !lock.withLock({ requested }) { try? await Task.sleep(for: .milliseconds(5)) }
+    }
+    func waitUntilOpen() async {
+        while !lock.withLock({ isOpen }) { try? await Task.sleep(for: .milliseconds(5)) }
+    }
+}
+
 final class Clock: @unchecked Sendable {
     var now = Date(timeIntervalSinceReferenceDate: 0)
 }
 
 @MainActor
 @Suite struct StoreTests {
-    private func makeStore(state: String, clock: Clock, recorder: RecordedRequests) -> ACStore {
-        let devices = #"{"response":[{"deviceId":"d1","deviceInfo":{"deviceType":"DEVICE_AIR_CONDITIONER","alias":"AC"}}]}"#
+    private func makeStore(
+        state: String, clock: Clock, recorder: RecordedRequests,
+        settings: InMemorySettings = InMemorySettings(token: "tok"), deviceIDs: [String] = ["d1"]
+    ) -> ACStore {
+        let list = deviceIDs.map { #"{"deviceId":"\#($0)","deviceInfo":{"deviceType":"DEVICE_AIR_CONDITIONER","alias":"AC \#($0)"}}"# }
+        let devices = #"{"response":[\#(list.joined(separator: ","))]}"#
         let transport: ThinQClient.Transport = { request in
             recorder.append(request)
             let path = request.url!.path
@@ -230,10 +249,109 @@ final class Clock: @unchecked Sendable {
             return (Data(body.utf8), HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
         }
         return ACStore(
-            settings: InMemorySettings(token: "tok"),
+            settings: settings,
             makeClient: { ThinQClient(token: $0, clientID: $1, transport: transport) },
             now: { clock.now }
         )
+    }
+
+    @Test func listsEveryAirConditionerAndStartsWithTheFirst() async throws {
+        let settings = InMemorySettings(token: "tok")
+        let store = makeStore(state: offState, clock: Clock(), recorder: RecordedRequests(), settings: settings, deviceIDs: ["d1", "d2"])
+        await store.refresh()
+        #expect(store.devices.map(\.id) == ["d1", "d2"])
+        #expect(store.device?.id == "d1")
+        #expect(settings.deviceID == "d1")
+    }
+
+    @Test func rememberedUnitIsPickedOverTheFirst() async throws {
+        let settings = InMemorySettings(token: "tok", deviceID: "d2")
+        let store = makeStore(state: offState, clock: Clock(), recorder: RecordedRequests(), settings: settings, deviceIDs: ["d1", "d2"])
+        await store.refresh()
+        #expect(store.device?.id == "d2")
+    }
+
+    @Test func selectingAnotherUnitReadsItsStateAndSendsToIt() async throws {
+        let settings = InMemorySettings(token: "tok")
+        let recorder = RecordedRequests()
+        let store = makeStore(state: offState, clock: Clock(), recorder: recorder, settings: settings, deviceIDs: ["d1", "d2"])
+        await store.refresh()
+        store.perform(.power(true))
+
+        await store.selectDevice(id: "d2")
+        #expect(store.device?.id == "d2")
+        #expect(settings.deviceID == "d2")
+        #expect(store.connection == .connected)
+        #expect(store.status?.isOn == false)
+        #expect(recorder.all.contains { $0.url?.path == "/devices/d2/state" })
+        #expect(recorder.all.contains { $0.url?.path == "/devices/d2/profile" })
+
+        store.perform(.targetTemperature(20))
+        for _ in 0..<50 where store.isSending {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let controls = recorder.all.filter { $0.url?.path.hasSuffix("/control") == true }
+        #expect(controls.contains { $0.url?.path == "/devices/d2/control" })
+        #expect(!controls.contains { $0.url?.path == "/devices/d2/control" && (try? json($0.httpBody)) == ACCommand.power(true).payload })
+    }
+
+    @Test func readInFlightForThePreviousUnitIsDiscardedWhenSwitching() async throws {
+        let gate = Gate()
+        let recorder = RecordedRequests()
+        let onState = #"{"operation":{"airConOperationMode":"POWER_ON"},"airConJobMode":{"currentJobMode":"COOL"},"temperature":{"currentTemperature":26,"targetTemperature":18,"unit":"C"}}"#
+        let otherState = #"{"operation":{"airConOperationMode":"POWER_OFF"},"airConJobMode":{"currentJobMode":"COOL"},"temperature":{"currentTemperature":26,"targetTemperature":25,"unit":"C"}}"#
+        let list = ["d1", "d2"].map { #"{"deviceId":"\#($0)","deviceInfo":{"deviceType":"DEVICE_AIR_CONDITIONER","alias":"AC \#($0)"}}"# }
+        let transport: ThinQClient.Transport = { request in
+            recorder.append(request)
+            let path = request.url!.path
+            let body: String
+            if path.hasSuffix("/devices") {
+                body = #"{"response":[\#(list.joined(separator: ","))]}"#
+            } else if path == "/devices/d1/state" {
+                gate.markRequested()
+                await gate.waitUntilOpen()
+                body = #"{"response":\#(onState)}"#
+            } else if path == "/devices/d2/state" {
+                body = #"{"response":\#(otherState)}"#
+            } else {
+                body = #"{"response":{}}"#
+            }
+            return (Data(body.utf8), HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+        }
+        let settings = InMemorySettings(token: "tok")
+        let store = ACStore(
+            settings: settings,
+            makeClient: { ThinQClient(token: $0, clientID: $1, transport: transport) },
+            now: { Date(timeIntervalSinceReferenceDate: 0) }
+        )
+
+        let firstRead = Task { await store.refresh() }
+        await gate.waitUntilRequested()
+        #expect(store.device?.id == "d1")
+
+        let switching = Task { await store.selectDevice(id: "d2") }
+        try await Task.sleep(for: .milliseconds(20))
+        gate.open()
+        await firstRead.value
+        await switching.value
+
+        #expect(store.device?.id == "d2")
+        #expect(settings.deviceID == "d2")
+        #expect(store.connection == .connected)
+        #expect(store.status?.isOn == false)
+        #expect(store.status?.targetTemperature == 25)
+        #expect(recorder.all.contains { $0.url?.path == "/devices/d2/profile" })
+    }
+
+    @Test func selectingTheCurrentOrAnUnknownUnitDoesNothing() async throws {
+        let recorder = RecordedRequests()
+        let store = makeStore(state: offState, clock: Clock(), recorder: recorder, deviceIDs: ["d1", "d2"])
+        await store.refresh()
+        let before = recorder.all.count
+        await store.selectDevice(id: "d1")
+        await store.selectDevice(id: "nope")
+        #expect(recorder.all.count == before)
+        #expect(store.device?.id == "d1")
     }
 
     private let offState = #"{"operation":{"airConOperationMode":"POWER_OFF"},"airConJobMode":{"currentJobMode":"COOL"},"temperature":{"currentTemperature":26,"targetTemperature":18,"unit":"C"}}"#
