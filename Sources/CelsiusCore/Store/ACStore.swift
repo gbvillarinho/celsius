@@ -23,6 +23,8 @@ public final class ACStore {
     public private(set) var deviceCapabilities: ACCapabilities = .fallback
     public private(set) var connection: ConnectionState = .loading
     public private(set) var device: ThinQDevice?
+    /// Every air conditioner on the account, so the user can pick one when there are several.
+    public private(set) var devices: [ThinQDevice] = []
     public private(set) var isSending = false
     /// A short-lived error to show in the footer, e.g. a rejected command.
     public private(set) var transientMessage: String?
@@ -112,7 +114,7 @@ public final class ACStore {
     /// A store with fixed data that never touches the network, for snapshots.
     public init(
         previewStatus: ACStatus?, capabilities: ACCapabilities, connection: ConnectionState = .connected,
-        availableUpdate: AppUpdate? = nil, isReconnecting: Bool = false
+        availableUpdate: AppUpdate? = nil, isReconnecting: Bool = false, devices: [ThinQDevice]? = nil
     ) {
         // Limits that keep the given capabilities as they are.
         let limits = TemperatureLimits(
@@ -131,10 +133,12 @@ public final class ACStore {
         self.serverStatus = previewStatus
         self.deviceCapabilities = capabilities
         self.connection = connection
-        self.device = ThinQDevice(
+        let device = ThinQDevice(
             deviceId: "preview",
             deviceInfo: .init(deviceType: "DEVICE_AIR_CONDITIONER", modelName: "RAC_056905_WW", alias: "Ar-condicionado")
         )
+        self.devices = devices ?? [device]
+        self.device = self.devices.first ?? device
     }
 
     // MARK: State
@@ -229,9 +233,29 @@ public final class ACStore {
     private func forgetDevice() {
         settings.deviceID = nil
         device = nil
+        devices = []
         serverStatus = nil
         overrides = [:]
         capabilitiesLoaded = false
+    }
+
+    // MARK: Device choice
+
+    /// Switches to another air conditioner on the account. Pending commands were meant for the
+    /// previous unit, so they are dropped rather than sent to the new one.
+    public func select(device chosen: ThinQDevice) async {
+        guard chosen.id != device?.id, devices.contains(where: { $0.id == chosen.id }) else { return }
+        queue = []
+        debounceTask?.cancel()
+        refreshSoonTask?.cancel()
+        overrides = [:]
+        serverStatus = nil
+        capabilitiesLoaded = false
+        device = chosen
+        settings.deviceID = chosen.id
+        connection = .loading
+        await refresh()
+        if isActive { startPolling(immediately: false) }
     }
 
     // MARK: Refresh
@@ -248,13 +272,19 @@ public final class ACStore {
 
         let client = makeClient(token, settings.clientID)
         do {
-            let status = try await retryingTransient {
+            let (deviceID, capabilities, status) = try await retryingTransient {
                 let deviceID = try await resolveDevice(client)
-                if !capabilitiesLoaded {
-                    deviceCapabilities = try await client.capabilities(deviceID: deviceID)
-                    capabilitiesLoaded = true
-                }
-                return try await client.status(deviceID: deviceID)
+                let capabilities = capabilitiesLoaded ? nil : try await client.capabilities(deviceID: deviceID)
+                return (deviceID, capabilities, try await client.status(deviceID: deviceID))
+            }
+            // The user switched units while this read was in flight: it's all for the old one.
+            guard device?.id == deviceID else {
+                scheduleRefresh(after: .zero)
+                return
+            }
+            if let capabilities {
+                deviceCapabilities = capabilities
+                capabilitiesLoaded = true
             }
             serverStatus = status
             pruneOverrides()
@@ -285,10 +315,11 @@ public final class ACStore {
 
     private func resolveDevice(_ client: ThinQClient) async throws -> String {
         if let device, device.id == settings.deviceID { return device.id }
-        let devices = try await client.devices().filter(\.isAirConditioner)
-        guard let chosen = devices.first(where: { $0.id == settings.deviceID }) ?? devices.first else {
+        let found = try await client.devices().filter(\.isAirConditioner)
+        guard let chosen = found.first(where: { $0.id == settings.deviceID }) ?? found.first else {
             throw ThinQError.api(code: "", message: "No air conditioner found on this LG account")
         }
+        devices = found
         device = chosen
         settings.deviceID = chosen.id
         capabilitiesLoaded = false

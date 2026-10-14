@@ -219,8 +219,12 @@ final class Clock: @unchecked Sendable {
 
 @MainActor
 @Suite struct StoreTests {
-    private func makeStore(state: String, clock: Clock, recorder: RecordedRequests) -> ACStore {
-        let devices = #"{"response":[{"deviceId":"d1","deviceInfo":{"deviceType":"DEVICE_AIR_CONDITIONER","alias":"AC"}}]}"#
+    private func makeStore(
+        state: String, clock: Clock, recorder: RecordedRequests,
+        settings: InMemorySettings = InMemorySettings(token: "tok"), deviceIDs: [String] = ["d1"]
+    ) -> ACStore {
+        let list = deviceIDs.map { #"{"deviceId":"\#($0)","deviceInfo":{"deviceType":"DEVICE_AIR_CONDITIONER","alias":"AC \#($0)"}}"# }
+        let devices = #"{"response":[\#(list.joined(separator: ","))]}"#
         let transport: ThinQClient.Transport = { request in
             recorder.append(request)
             let path = request.url!.path
@@ -230,7 +234,7 @@ final class Clock: @unchecked Sendable {
             return (Data(body.utf8), HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
         }
         return ACStore(
-            settings: InMemorySettings(token: "tok"),
+            settings: settings,
             makeClient: { ThinQClient(token: $0, clientID: $1, transport: transport) },
             now: { clock.now }
         )
@@ -282,6 +286,56 @@ final class Clock: @unchecked Sendable {
         await store.refresh()
         store.perform(.targetTemperature(18))  // Same as the server: nothing to do.
         #expect(store.isSending == false)
+    }
+
+    @Test func listsEveryAirConditionerAndStartsWithTheFirst() async throws {
+        let settings = InMemorySettings(token: "tok")
+        let store = makeStore(state: offState, clock: Clock(), recorder: RecordedRequests(), settings: settings, deviceIDs: ["d1", "d2"])
+        await store.refresh()
+        #expect(store.devices.map(\.id) == ["d1", "d2"])
+        #expect(store.device?.id == "d1")
+        #expect(settings.deviceID == "d1")
+    }
+
+    @Test func rememberedUnitIsPickedOverTheFirst() async throws {
+        let settings = InMemorySettings(token: "tok", deviceID: "d2")
+        let store = makeStore(state: offState, clock: Clock(), recorder: RecordedRequests(), settings: settings, deviceIDs: ["d1", "d2"])
+        await store.refresh()
+        #expect(store.device?.id == "d2")
+    }
+
+    @Test func selectingAnotherUnitReadsItsStateAndSendsToIt() async throws {
+        let settings = InMemorySettings(token: "tok")
+        let recorder = RecordedRequests()
+        let store = makeStore(state: offState, clock: Clock(), recorder: recorder, settings: settings, deviceIDs: ["d1", "d2"])
+        await store.refresh()
+        store.perform(.power(true))  // Meant for d1: must not reach d2.
+
+        let second = try #require(store.devices.first { $0.id == "d2" })
+        await store.select(device: second)
+        #expect(store.device?.id == "d2")
+        #expect(settings.deviceID == "d2")
+        #expect(store.connection == .connected)
+        #expect(store.status?.isOn == false)
+        #expect(recorder.all.contains { $0.url?.path == "/devices/d2/state" })
+        #expect(recorder.all.contains { $0.url?.path == "/devices/d2/profile" })
+
+        store.perform(.targetTemperature(20))
+        for _ in 0..<50 where store.isSending {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let controls = recorder.all.filter { $0.url?.path.hasSuffix("/control") == true }
+        #expect(controls.allSatisfy { $0.url?.path == "/devices/d2/control" })
+        #expect(controls.contains { (try? json($0.httpBody)) == ACCommand.targetTemperature(20).payload })
+    }
+
+    @Test func selectingTheCurrentUnitDoesNothing() async throws {
+        let recorder = RecordedRequests()
+        let store = makeStore(state: offState, clock: Clock(), recorder: recorder, deviceIDs: ["d1", "d2"])
+        await store.refresh()
+        let before = recorder.all.count
+        await store.select(device: try #require(store.device))
+        #expect(recorder.all.count == before)
     }
 
     @Test func sendsCommandToDevice() async throws {

@@ -66,8 +66,7 @@ struct PopoverView: View {
     private var header: some View {
         HStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 1) {
-                Text(store.device?.displayName ?? "Air conditioner")
-                    .font(.system(size: 13, weight: .semibold))
+                deviceName
                 if store.transientMessage != nil || store.isReconnecting || store.connection != .connected {
                     FooterStatus(store: store)
                 } else {
@@ -82,6 +81,44 @@ struct PopoverView: View {
                 .toggleStyle(.switch)
                 .labelsHidden()
                 .disabled(status == nil)
+        }
+    }
+
+    /// The unit's name; a menu to switch units when the account has more than one.
+    @ViewBuilder
+    private var deviceName: some View {
+        let title = Text(store.device?.displayName ?? "Air conditioner")
+            .font(.system(size: 13, weight: .semibold))
+        if store.devices.count > 1 {
+            Menu {
+                ForEach(store.devices) { device in
+                    Button {
+                        Task { await store.select(device: device) }
+                    } label: {
+                        if device.id == store.device?.id {
+                            Label(Labels.deviceName(device, among: store.devices), systemImage: "checkmark")
+                        } else {
+                            Text(Labels.deviceName(device, among: store.devices))
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    title
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(Theme.secondaryText)
+                }
+                .contentShape(Rectangle())
+            }
+            .menuStyle(.button)
+            .buttonStyle(.plain)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .accessibilityLabel("Unit")
+            .accessibilityValue(store.device?.displayName ?? "")
+        } else {
+            title
         }
     }
 
