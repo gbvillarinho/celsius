@@ -48,6 +48,9 @@ struct SettingsView: View {
                             Spacer()
                             FooterStatus(store: store)
                         }
+                        if store.devices.count > 1 {
+                            devicePicker
+                        }
                     } else {
                         Text("Paste a Personal Access Token from your LG account to connect to your air conditioner.")
                             .font(.system(size: 12))
@@ -131,6 +134,29 @@ struct SettingsView: View {
             .font(.system(size: 12))
         }
     }
+
+    private var devicePicker: some View {
+        HStack {
+            Text("Unit")
+                .font(.system(size: 13))
+            Spacer()
+            PopUpButton(
+                options: store.devices.map { (Labels.deviceName($0, among: store.devices), $0.id) },
+                selection: Binding(
+                    get: { store.device?.id ?? "" },
+                    set: { id in selectUnit(id) }
+                )
+            )
+            .frame(width: Self.unitPopUpWidth)
+            .accessibilityLabel("Unit")
+        }
+    }
+
+    private func selectUnit(_ id: String) {
+        Task { await store.selectDevice(id: id) }
+    }
+
+    private static let unitPopUpWidth: CGFloat = 140
 
     /// Minimum and maximum steppers bounded by what the device accepts, plus half degrees when it has them.
     private var temperatureLimits: some View {
