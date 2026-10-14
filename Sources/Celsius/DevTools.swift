@@ -41,6 +41,18 @@ enum DevTools {
             renderNative(popover, to: directory.appendingPathComponent("\(name)-native.png"))
         }
 
+        let units = [
+            ThinQDevice(deviceId: "living", deviceInfo: .init(deviceType: "DEVICE_AIR_CONDITIONER", modelName: "RAC_056905_WW", alias: "Living room")),
+            ThinQDevice(deviceId: "bedroom", deviceInfo: .init(deviceType: "DEVICE_AIR_CONDITIONER", modelName: "RAC_056905_WW", alias: "Bedroom")),
+        ]
+        for (name, connection) in [("two-units", ConnectionState.connected), ("two-units-settings", .needsSetup)] {
+            let status = connection == .connected ? scenarios[0].1 : nil
+            let store = ACStore(previewStatus: status, capabilities: caps, connection: connection, devices: units)
+            let popover = PopoverView(store: store, fixedDate: date)
+            render(popover, to: directory.appendingPathComponent("\(name).png"))
+            renderNative(popover, to: directory.appendingPathComponent("\(name)-native.png"))
+        }
+
         // Requests are failing, but the last known state is still shown.
         let reconnecting = ACStore(previewStatus: scenarios[0].1, capabilities: caps, isReconnecting: true)
         let reconnectingPopover = PopoverView(store: reconnecting, fixedDate: date)
