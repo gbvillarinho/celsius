@@ -220,6 +220,7 @@ final class Gate: @unchecked Sendable {
 
     func markRequested() { lock.withLock { requested = true } }
     func open() { lock.withLock { isOpen = true } }
+    var isOpenNow: Bool { lock.withLock { isOpen } }
     func waitUntilRequested() async {
         while !lock.withLock({ requested }) { try? await Task.sleep(for: .milliseconds(5)) }
     }
@@ -352,6 +353,70 @@ final class Clock: @unchecked Sendable {
         await store.selectDevice(id: "nope")
         #expect(recorder.all.count == before)
         #expect(store.device?.id == "d1")
+    }
+
+    @Test func signingOutForgetsTheUnits() async throws {
+        let settings = InMemorySettings(token: "tok")
+        let store = makeStore(state: offState, clock: Clock(), recorder: RecordedRequests(), settings: settings, deviceIDs: ["d1", "d2"])
+        await store.refresh()
+        #expect(store.devices.count == 2)
+
+        store.signOut()
+        #expect(store.devices.isEmpty)
+        #expect(store.device == nil)
+        #expect(settings.deviceID == nil)
+        #expect(store.connection == .needsSetup)
+    }
+
+    @Test func switchingUnitsWhileAReadWaitsToRetryKeepsTheNewUnit() async throws {
+        let gate = Gate()
+        let offState = self.offState
+        let list = ["d1", "d2"].map { #"{"deviceId":"\#($0)","deviceInfo":{"deviceType":"DEVICE_AIR_CONDITIONER","alias":"AC \#($0)"}}"# }
+        let firstTry = Gate()
+        let transport: ThinQClient.Transport = { request in
+            let path = request.url!.path
+            func reply(_ body: String) -> (Data, URLResponse) {
+                (Data(body.utf8), HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+            }
+            if path.hasSuffix("/devices") { return reply(#"{"response":[\#(list.joined(separator: ","))]}"#) }
+            if path == "/devices/d1/state" {
+                if !firstTry.isOpenNow { firstTry.open(); throw URLError(.timedOut) }
+                return reply(#"{"response":\#(offState)}"#)
+            }
+            if path == "/devices/d2/state" {
+                return reply(#"{"response":{"operation":{"airConOperationMode":"POWER_ON"},"airConJobMode":{"currentJobMode":"COOL"},"temperature":{"currentTemperature":26,"targetTemperature":22,"unit":"C"}}}"#)
+            }
+            return reply(#"{"response":{}}"#)
+        }
+        let settings = InMemorySettings(token: "tok")
+        let store = ACStore(
+            settings: settings,
+            makeClient: { ThinQClient(token: $0, clientID: $1, transport: transport) },
+            sleep: { duration in
+                if duration == .milliseconds(500) {
+                    gate.markRequested()
+                    await gate.waitUntilOpen()
+                } else {
+                    try? await Task.sleep(for: .milliseconds(1))
+                }
+            }
+        )
+
+        let firstRead = Task { await store.refresh() }
+        await gate.waitUntilRequested()
+        #expect(store.device?.id == "d1")
+
+        let switching = Task { await store.selectDevice(id: "d2") }
+        try await Task.sleep(for: .milliseconds(20))
+        gate.open()
+        await firstRead.value
+        await switching.value
+
+        #expect(store.device?.id == "d2")
+        #expect(settings.deviceID == "d2")
+        #expect(store.connection == .connected)
+        #expect(store.status?.isOn == true)
+        #expect(store.status?.targetTemperature == 22)
     }
 
     private let offState = #"{"operation":{"airConOperationMode":"POWER_OFF"},"airConJobMode":{"currentJobMode":"COOL"},"temperature":{"currentTemperature":26,"targetTemperature":18,"unit":"C"}}"#
