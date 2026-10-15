@@ -61,6 +61,18 @@ private func json(_ data: Data?) throws -> JSONValue {
         #expect(!caps.supportsEco && !caps.supportsSwing && !caps.supportsSleep)
     }
 
+    @Test func togglesRowIsHiddenWithoutEco() {
+        var caps = ACCapabilities.fallback
+        #expect(caps.hasToggles)
+        caps.supportsEco = false
+        #expect(!caps.hasToggles)
+    }
+
+    @Test func togglesRowIsHiddenForMinimalProfile() {
+        let profile: JSONValue = ["property": ["airConJobMode": ["currentJobMode": ["mode": .array(["r", "w"]), "value": ["w": .array(["COOL"])]]]]]
+        #expect(!ACCapabilities(profile: profile).hasToggles)
+    }
+
     @Test func devicesFromRealList() throws {
         let data = try JSONEncoder().encode(try #require(try fixture("devices")["response"]))
         let devices = try JSONDecoder().decode([ThinQDevice].self, from: data)
