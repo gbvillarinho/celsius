@@ -154,6 +154,9 @@ public struct ACCapabilities: Sendable, Equatable {
     public var supportsSwing: Bool
     public var supportsSleep: Bool
 
+    /// Whether the popover's row of round toggles has anything to show. Add new toggles here.
+    public var hasToggles: Bool { supportsEco }
+
     public static let fallback = ACCapabilities(
         modes: [ACMode.cool, ACMode.dry, ACMode.fan, ACMode.auto],
         fanSpeeds: ["LOW", "MID", "HIGH", "AUTO"],

@@ -55,8 +55,10 @@ struct PopoverView: View {
             Divider()
             settingsRows
             Divider()
-            toggleRows
-            Divider()
+            if caps.hasToggles {
+                toggleRows
+                Divider()
+            }
             MenuRow(title: "Air conditioner settings…", showsBadge: store.availableUpdate != nil) { showingSettings = true }
         }
         .redacted(reason: status == nil ? .placeholder : [])
