@@ -1,5 +1,6 @@
 import Foundation
 import Security
+import Network
 
 /// Generic-password storage in the login keychain.
 public enum Keychain {
@@ -28,11 +29,15 @@ public enum Keychain {
             kSecAttrAccount as String: account,
         ]
         let data = Data(value.utf8)
-        let status = SecItemUpdate(query as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+        let attributes: [String: Any] = [
+            kSecValueData as String: data,
+            kSecAttrLabel as String: account == "daikin-local-key" ? "Celsius – Daikin integration key" : "Celsius – LG ThinQ token",
+        ]
+        let status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
         if status == errSecItemNotFound {
             var item = query
             item[kSecValueData as String] = data
-            item[kSecAttrLabel as String] = "Celsius – LG ThinQ token"
+            item[kSecAttrLabel as String] = account == "daikin-local-key" ? "Celsius – Daikin integration key" : "Celsius – LG ThinQ token"
             // Keep the token on this Mac: no iCloud Keychain sync, no backups.
             item[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
             return SecItemAdd(item as CFDictionary, nil) == errSecSuccess
@@ -50,8 +55,26 @@ public enum Keychain {
     }
 }
 
+/// Injectable wrapper around generic-password Keychain operations.
+public protocol CredentialStorage: AnyObject {
+    func read(account: String) -> String?
+    @discardableResult func write(_ value: String, account: String) -> Bool
+    func delete(account: String)
+}
+
+public final class KeychainCredentialStorage: CredentialStorage {
+    public init() {}
+    public func read(account: String) -> String? { Keychain.read(account) }
+    @discardableResult public func write(_ value: String, account: String) -> Bool { Keychain.write(value, account: account) }
+    public func delete(account: String) { Keychain.delete(account) }
+}
+
 /// Where the app keeps its configuration. Abstracted so tests and snapshots don't touch the keychain.
 public protocol SettingsStorage: AnyObject {
+    var providerKind: ACProviderKind { get set }
+    var daikinAddress: String? { get set }
+    var daikinName: String? { get set }
+    var daikinKey: String? { get set }
     var token: String? { get set }
     var clientID: String { get }
     var deviceID: String? { get set }
@@ -60,23 +83,63 @@ public protocol SettingsStorage: AnyObject {
 
 public final class AppSettings: SettingsStorage {
     private let defaults: UserDefaults
+    private let credentials: CredentialStorage
     private static let tokenAccount = "thinq-pat"
+    private static let daikinKeyAccount = "daikin-local-key"
 
-    public init(defaults: UserDefaults = .standard) {
+    public init(defaults: UserDefaults = .standard, credentials: CredentialStorage = KeychainCredentialStorage()) {
         self.defaults = defaults
+        self.credentials = credentials
+    }
+
+    public var providerKind: ACProviderKind {
+        get { defaults.string(forKey: "providerKind").flatMap(ACProviderKind.init(rawValue:)) ?? .thinQ }
+        set { defaults.set(newValue.rawValue, forKey: "providerKind") }
+    }
+
+    public var daikinAddress: String? {
+        get { defaults.string(forKey: "daikinAddress") }
+        set {
+            let value = newValue?.trimmingCharacters(in: .whitespacesAndNewlines)
+            defaults.set(value?.isEmpty == true ? nil : value, forKey: "daikinAddress")
+        }
+    }
+
+    public var daikinName: String? {
+        get { defaults.string(forKey: "daikinName") }
+        set {
+            let value = newValue?.trimmingCharacters(in: .whitespacesAndNewlines)
+            defaults.set(value?.isEmpty == true ? nil : value, forKey: "daikinName")
+        }
+    }
+
+    public var daikinKey: String? {
+        get { credentials.read(account: Self.daikinKeyAccount) }
+        set {
+            if let newValue, !newValue.isEmpty { credentials.write(newValue, account: Self.daikinKeyAccount) }
+            else { credentials.delete(account: Self.daikinKeyAccount) }
+        }
+    }
+
+    public static func isValidDaikinAddress(_ value: String) -> Bool {
+        let candidate = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !candidate.isEmpty, !candidate.contains("/"), !candidate.contains("@"), !candidate.contains("#") else { return false }
+        if let ip = IPv4Address(candidate) { return ip.rawValue.count == 4 }
+        if let ip = IPv6Address(candidate) { return ip.rawValue.count == 16 }
+        return false
     }
 
     /// `CELSIUS_PAT` overrides the keychain, for development runs from the terminal.
     public var token: String? {
         get {
             if let env = ProcessInfo.processInfo.environment["CELSIUS_PAT"], !env.isEmpty { return env }
-            return Keychain.read(Self.tokenAccount)
+            return credentials.read(account: Self.tokenAccount)
         }
         set {
             if let newValue, !newValue.isEmpty {
-                Keychain.write(newValue, account: Self.tokenAccount)
+                credentials.write(newValue, account: Self.tokenAccount)
             } else {
-                Keychain.delete(Self.tokenAccount)
+                credentials.delete(account: Self.tokenAccount)
             }
         }
     }
@@ -103,6 +166,10 @@ public final class AppSettings: SettingsStorage {
 }
 
 public final class InMemorySettings: SettingsStorage {
+    public var providerKind: ACProviderKind = .thinQ
+    public var daikinAddress: String?
+    public var daikinName: String?
+    public var daikinKey: String?
     public var token: String?
     public var clientID = "celsius-test"
     public var deviceID: String?

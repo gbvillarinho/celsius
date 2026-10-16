@@ -73,6 +73,18 @@ private func json(_ data: Data?) throws -> JSONValue {
         #expect(!ACCapabilities(profile: profile).hasToggles)
     }
 
+    @Test func commonDeviceMapsProviderAndDisplayName() {
+        let thinq = ThinQDevice(
+            deviceId: "dev-1",
+            deviceInfo: .init(deviceType: "DEVICE_AIR_CONDITIONER", modelName: "RAC-model", alias: "Living room")
+        )
+        let common = ACDevice(thinQ: thinq)
+        #expect(common.id == "dev-1")
+        #expect(common.provider == .thinQ)
+        #expect(common.modelName == "RAC-model")
+        #expect(common.displayName == "Living room")
+    }
+
     @Test func devicesFromRealList() throws {
         let data = try JSONEncoder().encode(try #require(try fixture("devices")["response"]))
         let devices = try JSONDecoder().decode([ThinQDevice].self, from: data)
@@ -113,6 +125,49 @@ private func json(_ data: Data?) throws -> JSONValue {
     }
 }
 
+private final class MemoryCredentials: CredentialStorage {
+    var values: [String: String] = [:]
+    func read(account: String) -> String? { values[account] }
+    func write(_ value: String, account: String) -> Bool { values[account] = value; return true }
+    func delete(account: String) { values.removeValue(forKey: account) }
+}
+
+@Suite struct ProviderSettingsTests {
+    @Test func persistsProviderAndAddress() {
+        let defaults = UserDefaults(suiteName: "CelsiusTests-\(UUID().uuidString)")!
+        let appSettings = AppSettings(defaults: defaults, credentials: MemoryCredentials())
+        appSettings.providerKind = .daikin
+        appSettings.daikinAddress = "192.0.2.40"
+        let reloaded = AppSettings(defaults: defaults, credentials: MemoryCredentials())
+        #expect(reloaded.providerKind == .daikin)
+        #expect(reloaded.daikinAddress == "192.0.2.40")
+    }
+
+    @Test func storesDaikinKeySeparately() {
+        let credentials = MemoryCredentials()
+        let appSettings = AppSettings(defaults: UserDefaults(suiteName: UUID().uuidString)!, credentials: credentials)
+        appSettings.daikinKey = "synthetic-daikin-key"
+        #expect(appSettings.daikinKey == "synthetic-daikin-key")
+        #expect(credentials.values["daikin-local-key"] == "synthetic-daikin-key")
+        #expect(credentials.values["thinq-pat"] == nil)
+    }
+
+    @Test func clearsDaikinKey() {
+        let credentials = MemoryCredentials()
+        let appSettings = AppSettings(defaults: UserDefaults(suiteName: UUID().uuidString)!, credentials: credentials)
+        appSettings.daikinKey = "synthetic-daikin-key"
+        appSettings.daikinKey = nil
+        #expect(credentials.values["daikin-local-key"] == nil)
+    }
+
+    @Test func validatesDaikinAddress() {
+        #expect(AppSettings.isValidDaikinAddress("192.0.2.40"))
+        #expect(AppSettings.isValidDaikinAddress("2001:db8::4"))
+        #expect(!AppSettings.isValidDaikinAddress("https://192.0.2.40"))
+        #expect(!AppSettings.isValidDaikinAddress("daikin.local"))
+    }
+}
+
 // MARK: - Command payloads (formats validated against the real unit)
 
 @Suite struct CommandTests {
@@ -148,6 +203,41 @@ private func json(_ data: Data?) throws -> JSONValue {
     }
 }
 
+// MARK: - Daikin frame codec
+
+@Suite struct DaikinCryptoTests {
+    private let key = Data("YELLOW SUBMARINE".utf8)
+
+    @Test func roundTripsReferenceVectors() throws {
+        let payload = Data(#"{"port1":{"power":1}}"#.utf8)
+        let frame = try DaikinCrypto.encode(payload, key: key, iv: Data(repeating: 0, count: 16))
+        #expect(try DaikinCrypto.decode(frame, key: key, route: .command) == payload)
+    }
+
+    @Test func calculatesCRC16() {
+        #expect(DaikinCrypto.crc16(Data("123456789".utf8)) == 0xd64e)
+    }
+
+    @Test func detectsWrongKeyOutputAndRejectsInvalidCRCWithoutSecrets() throws {
+        let frame = try DaikinCrypto.encode(Data("{}".utf8), key: key, iv: Data(repeating: 1, count: 16))
+        let wrongKey = try DaikinCrypto.decode(frame, key: Data("WRONGKEY12345678".utf8), route: .command)
+        #expect(wrongKey != Data("{}".utf8))
+        #expect(wrongKey != Data("{}".utf8))
+        #expect(!String(decoding: wrongKey, as: UTF8.self).contains("WRONGKEY12345678"))
+        var corrupt = frame
+        corrupt[corrupt.count - 1] ^= 0xff
+        #expect(throws: DaikinCryptoError.invalidCRC) {
+            try DaikinCrypto.decode(corrupt, key: key, route: .command)
+        }
+    }
+
+    @Test func rejectsShortFrames() {
+        #expect(throws: DaikinCryptoError.shortFrame) {
+            try DaikinCrypto.decode(Data(repeating: 0, count: 17), key: key, route: .command)
+        }
+    }
+}
+
 // MARK: - HTTP client
 
 final class RecordedRequests: @unchecked Sendable {
@@ -171,6 +261,22 @@ private func stubTransport(
 }
 
 @Suite struct ClientTests {
+    @Test func thinQProviderKeepsExistingRequests() async throws {
+        let recorder = RecordedRequests()
+        let client: any ACProvider = ThinQClient(
+            token: "tok", clientID: "celsius-x", transport: stubTransport(body: #"{"response":{}}"#, recorder: recorder)
+        )
+        try await client.send(.eco(true), deviceID: "dev1")
+        let request = try #require(recorder.all.first)
+        #expect(request.httpMethod == "POST")
+        #expect(request.url?.absoluteString == "https://api-aic.lgthinq.com/devices/dev1/control")
+        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer tok")
+        #expect(request.value(forHTTPHeaderField: "x-country") == "BR")
+        #expect(request.value(forHTTPHeaderField: "x-client-id") == "celsius-x")
+        #expect(request.value(forHTTPHeaderField: "x-conditional-control") == "true")
+        #expect(try json(request.httpBody) == ACCommand.eco(true).payload)
+    }
+
     @Test func sendsRequiredHeaders() async throws {
         let recorder = RecordedRequests()
         let client = ThinQClient(token: "tok", clientID: "celsius-x", transport: stubTransport(body: #"{"response":{}}"#, recorder: recorder))
@@ -223,6 +329,112 @@ private func stubTransport(
     }
 }
 
+// MARK: - Daikin local transport and client
+
+private final class DaikinRequestRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var requests: [Data] = []
+    func append(_ request: Data) { lock.withLock { requests.append(request) } }
+    var last: Data? { lock.withLock { requests.last } }
+}
+
+private func daikinHTTPResponse(_ payload: Data, key: Data) throws -> Data {
+    var frame = try DaikinCrypto.encode(payload, key: key, iv: Data(repeating: 7, count: 16))
+    frame.insert(0, at: 16)
+    let crc = DaikinCrypto.crc16(Data(frame.dropLast(2)))
+    frame[frame.count - 2] = UInt8(crc & 0xff)
+    frame[frame.count - 1] = UInt8(crc >> 8)
+    let body = Data(frame.base64EncodedString().utf8)
+    var response = Data("HTTP/1.1 200 OK\r\nContent-Length: \(body.count)\r\n\r\n".utf8)
+    response.append(body)
+    return response
+}
+
+@Suite struct DaikinTransportTests {
+    @Test func parsesValidResponse() async throws {
+        let transport = DaikinLocalTransport(address: "192.0.2.40", exchange: { _, _, _, _ in
+            Data("HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nabc".utf8)
+        })
+        #expect(try await transport.request(method: "GET", path: "/acstatus") == Data("abc".utf8))
+    }
+
+    @Test func rejectsMalformedOrTruncatedHTTPResponse() async {
+        let transport = DaikinLocalTransport(address: "192.0.2.40", exchange: { _, _, _, _ in Data("broken".utf8) })
+        await #expect(throws: DaikinTransportError.invalidResponse) {
+            try await transport.request(method: "GET", path: "/acstatus")
+        }
+        let truncated = DaikinLocalTransport(address: "192.0.2.40", exchange: { _, _, _, _ in
+            Data("HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nabc".utf8)
+        })
+        await #expect(throws: DaikinTransportError.invalidResponse) {
+            try await truncated.request(method: "GET", path: "/acstatus")
+        }
+    }
+
+    @Test func timesOutUnreachableDevice() async {
+        let transport = DaikinLocalTransport(address: "192.0.2.40", exchange: { _, _, _, _ in
+            throw DaikinTransportError.timeout
+        })
+        await #expect(throws: DaikinTransportError.timeout) {
+            try await transport.request(method: "GET", path: "/acstatus")
+        }
+    }
+}
+
+@Suite struct DaikinClientTests {
+    private let key = Data("YELLOW SUBMARINE".utf8)
+
+    @Test func mapsKnownStateAndCommands() async throws {
+        let state = Data(#"{"port1":{"power":1,"mode":3,"temperature":22,"fan":17,"v_swing":1,"econo":1,"sensors":{"room_temp":24}}}"#.utf8)
+        let response = try daikinHTTPResponse(state, key: key)
+        let recorder = DaikinRequestRecorder()
+        let transport = DaikinLocalTransport(address: "192.0.2.40", exchange: { _, _, request, _ in
+            recorder.append(request)
+            return response
+        })
+        let client = try DaikinClient(address: "192.0.2.40", key: String(decoding: key, as: UTF8.self), transport: transport)
+        let status = try await client.status(deviceID: "daikin-local")
+        #expect(status.isOn)
+        #expect(status.mode == ACMode.cool)
+        #expect(status.targetTemperature == 22)
+        #expect(status.currentTemperature == 24)
+        #expect(status.fanSpeed == "AUTO")
+        #expect(status.swing == true && status.eco == true)
+        try await client.send(.power(false), deviceID: "daikin-local")
+        #expect(String(decoding: try #require(recorder.last), as: UTF8.self).contains("POST /acstatus"))
+    }
+
+    @Test func rejectsWrongKeyWithoutRevealingIt() async throws {
+        let state = Data(#"{"port1":{"power":1,"mode":3,"temperature":22,"fan":17}}"#.utf8)
+        let response = try daikinHTTPResponse(state, key: key)
+        let transport = DaikinLocalTransport(address: "192.0.2.40", exchange: { _, _, _, _ in response })
+        let client = try DaikinClient(address: "192.0.2.40", key: "WRONGKEY12345678", transport: transport)
+        await #expect(throws: DaikinClientError.invalidState) {
+            try await client.status(deviceID: "daikin-local")
+        }
+    }
+
+    @Test func preservesUnknownModeAndFanValues() async throws {
+        let state = Data(#"{"port1":{"power":0,"mode":91,"temperature":20,"fan":42}}"#.utf8)
+        let response = try daikinHTTPResponse(state, key: key)
+        let transport = DaikinLocalTransport(address: "192.0.2.40", exchange: { _, _, _, _ in response })
+        let client = try DaikinClient(address: "192.0.2.40", key: String(decoding: key, as: UTF8.self), transport: transport)
+        let status = try await client.status(deviceID: "daikin-local")
+        #expect(status.mode == "DAIKIN_MODE_91")
+        #expect(status.fanSpeed == "DAIKIN_FAN_42")
+    }
+
+    @Test func hidesUnsupportedFeatures() async throws {
+        let client = try DaikinClient(address: "192.0.2.40", key: String(decoding: key, as: UTF8.self), transport: DaikinLocalTransport(address: "192.0.2.40", exchange: { _, _, _, _ in Data() }))
+        let capabilities = try await client.capabilities(deviceID: "daikin-local")
+        #expect(capabilities.supportsEco && capabilities.supportsSwing)
+        #expect(!capabilities.supportsSleep)
+        await #expect(throws: DaikinClientError.unsupportedCommand) {
+            try await client.send(.sleep(hours: 1), deviceID: "daikin-local")
+        }
+    }
+}
+
 // MARK: - Store
 
 final class Gate: @unchecked Sendable {
@@ -243,6 +455,20 @@ final class Gate: @unchecked Sendable {
 
 final class Clock: @unchecked Sendable {
     var now = Date(timeIntervalSinceReferenceDate: 0)
+}
+
+private struct OfflineACProvider: ACProvider {
+    func devices() async throws -> [ACDevice] { throw DaikinTransportError.timeout }
+    func capabilities(deviceID: String) async throws -> ACCapabilities { .fallback }
+    func status(deviceID: String) async throws -> ACStatus { throw DaikinTransportError.timeout }
+    func send(_ command: ACCommand, deviceID: String) async throws { throw DaikinTransportError.timeout }
+}
+
+private struct StaticACProvider: ACProvider {
+    func devices() async throws -> [ACDevice] { [ACDevice(id: "fake", provider: .daikin, displayName: "Fake")] }
+    func capabilities(deviceID: String) async throws -> ACCapabilities { .fallback }
+    func status(deviceID: String) async throws -> ACStatus { ACStatus(isOn: false) }
+    func send(_ command: ACCommand, deviceID: String) async throws {}
 }
 
 @MainActor
@@ -266,6 +492,44 @@ final class Clock: @unchecked Sendable {
             makeClient: { ThinQClient(token: $0, clientID: $1, transport: transport) },
             now: { clock.now }
         )
+    }
+
+    @Test func requiresDaikinSetupWhenConfigurationIsMissing() async {
+        let settings = InMemorySettings()
+        settings.providerKind = .daikin
+        let store = ACStore(settings: settings)
+        await store.refresh()
+        #expect(store.connection == .needsSetup)
+    }
+
+    @Test func reportsOfflineWhenDaikinAddressIsUnreachable() async {
+        let settings = InMemorySettings(token: "lg-token")
+        settings.providerKind = .daikin
+        settings.daikinAddress = "192.0.2.40"
+        settings.daikinKey = "YELLOW SUBMARINE"
+        let recorder = RecordedRequests()
+        let store = ACStore(
+            settings: settings,
+            makeClient: { _, _ in ThinQClient(token: "unused", clientID: "test", transport: stubTransport(body: #"{"response":{}}"#, recorder: recorder)) },
+            makeProvider: { _ in OfflineACProvider() }
+        )
+        await store.refresh()
+        if case .offline = store.connection {} else { Issue.record("Expected the selected Daikin to be offline") }
+        #expect(!store.deviceCapabilities.supportsSleep)
+        #expect(recorder.all.isEmpty)
+    }
+
+    @Test func switchesProvidersWithoutReplacingLGSettings() async {
+        let settings = InMemorySettings(token: "lg-token", deviceID: "lg-device")
+        settings.daikinAddress = "192.0.2.40"
+        settings.daikinKey = "synthetic-daikin-key"
+        let store = ACStore(settings: settings, makeProvider: { _ in StaticACProvider() })
+        await store.selectProvider(.daikin)
+        #expect(settings.token == "lg-token")
+        #expect(settings.daikinKey == "synthetic-daikin-key")
+        await store.selectProvider(.thinQ)
+        #expect(settings.token == "lg-token")
+        #expect(settings.deviceID == "lg-device")
     }
 
     @Test func listsEveryAirConditionerAndStartsWithTheFirst() async throws {
@@ -310,6 +574,7 @@ final class Clock: @unchecked Sendable {
 
     @Test func readInFlightForThePreviousUnitIsDiscardedWhenSwitching() async throws {
         let gate = Gate()
+        let switchWait = Gate()
         let recorder = RecordedRequests()
         let onState = #"{"operation":{"airConOperationMode":"POWER_ON"},"airConJobMode":{"currentJobMode":"COOL"},"temperature":{"currentTemperature":26,"targetTemperature":18,"unit":"C"}}"#
         let otherState = #"{"operation":{"airConOperationMode":"POWER_OFF"},"airConJobMode":{"currentJobMode":"COOL"},"temperature":{"currentTemperature":26,"targetTemperature":25,"unit":"C"}}"#
@@ -335,7 +600,11 @@ final class Clock: @unchecked Sendable {
         let store = ACStore(
             settings: settings,
             makeClient: { ThinQClient(token: $0, clientID: $1, transport: transport) },
-            now: { Date(timeIntervalSinceReferenceDate: 0) }
+            now: { Date(timeIntervalSinceReferenceDate: 0) },
+            sleep: { _ in
+                switchWait.markRequested()
+                await Task.yield()
+            }
         )
 
         let firstRead = Task { await store.refresh() }
@@ -343,7 +612,7 @@ final class Clock: @unchecked Sendable {
         #expect(store.device?.id == "d1")
 
         let switching = Task { await store.selectDevice(id: "d2") }
-        try await Task.sleep(for: .milliseconds(20))
+        await switchWait.waitUntilRequested()
         gate.open()
         await firstRead.value
         await switching.value

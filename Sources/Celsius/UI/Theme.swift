@@ -63,9 +63,12 @@ enum Labels {
     static func fan(_ speed: String?) -> String {
         switch speed {
         case "LOW": "Low"
+        case "MID_LOW": "Medium low"
         case "MID": "Medium"
+        case "MID_HIGH": "Medium high"
         case "HIGH": "High"
         case "AUTO": "Auto"
+        case "SILENT": "Silent"
         case let other?: other.capitalized
         case nil: "—"
         }
@@ -87,7 +90,7 @@ enum Labels {
     }
 
     /// The unit's name, with the model added when two units share the same name.
-    static func deviceName(_ device: ThinQDevice, among devices: [ThinQDevice]) -> String {
+    static func deviceName(_ device: ACDevice, among devices: [ACDevice]) -> String {
         let name = device.displayName
         let twins = devices.filter { $0.displayName == name }
         guard twins.count > 1, let model = device.deviceInfo.modelName else { return name }

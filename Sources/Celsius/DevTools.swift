@@ -42,8 +42,8 @@ enum DevTools {
         }
 
         let units = [
-            ThinQDevice(deviceId: "living", deviceInfo: .init(deviceType: "DEVICE_AIR_CONDITIONER", modelName: "RAC_056905_WW", alias: "Living room")),
-            ThinQDevice(deviceId: "bedroom", deviceInfo: .init(deviceType: "DEVICE_AIR_CONDITIONER", modelName: "RAC_056905_WW", alias: "Bedroom")),
+            ACDevice(id: "living", provider: .thinQ, modelName: "RAC_056905_WW", displayName: "Living room"),
+            ACDevice(id: "bedroom", provider: .thinQ, modelName: "RAC_056905_WW", displayName: "Bedroom"),
         ]
         for (name, connection) in [("two-units", ConnectionState.connected), ("two-units-settings", .needsSetup)] {
             let status = connection == .connected ? scenarios[0].1 : nil

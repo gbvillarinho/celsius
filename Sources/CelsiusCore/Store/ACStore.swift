@@ -10,7 +10,7 @@ public enum ConnectionState: Equatable, Sendable {
     case deviceError
 }
 
-/// Source of truth for the UI: the last state read from LG's cloud, overlaid with optimistic changes.
+/// Source of truth for the UI: the last state read from the selected provider, overlaid with optimistic changes.
 ///
 /// The cloud can take a few seconds to reflect a command, so each change is kept as an override until
 /// the server confirms it or it expires. Commands are sent one at a time; a newer command for the same
@@ -22,8 +22,10 @@ public final class ACStore {
     /// What the device's profile says it supports.
     public private(set) var deviceCapabilities: ACCapabilities = .fallback
     public private(set) var connection: ConnectionState = .loading
-    public private(set) var device: ThinQDevice?
-    public private(set) var devices: [ThinQDevice] = []
+    public private(set) var device: ACDevice?
+    public private(set) var devices: [ACDevice] = []
+    public private(set) var providerKind: ACProviderKind
+    public private(set) var hasToken: Bool
     public private(set) var isSending = false
     /// A short-lived error to show in the footer, e.g. a rejected command.
     public private(set) var transientMessage: String?
@@ -74,6 +76,7 @@ public final class ACStore {
 
     @ObservationIgnored private let settings: SettingsStorage
     @ObservationIgnored private let makeClient: (String, String) -> ThinQClient
+    @ObservationIgnored private let makeProvider: ACProviderFactory?
     @ObservationIgnored private let now: () -> Date
     @ObservationIgnored private let isPreview: Bool
     @ObservationIgnored private let updateChecker: UpdateChecker?
@@ -98,6 +101,7 @@ public final class ACStore {
     public init(
         settings: SettingsStorage,
         makeClient: @escaping (String, String) -> ThinQClient = { ThinQClient(token: $0, clientID: $1) },
+        makeProvider: ACProviderFactory? = nil,
         now: @escaping () -> Date = Date.init,
         updateChecker: UpdateChecker? = nil,
         sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }
@@ -106,16 +110,20 @@ public final class ACStore {
         self.sleep = sleep
         self.settings = settings
         self.makeClient = makeClient
+        self.makeProvider = makeProvider
         self.now = now
         self.isPreview = false
         self.temperatureLimits = settings.temperatureLimits
-        if settings.token?.isEmpty ?? true { connection = .needsSetup }
+        self.deviceCapabilities = settings.providerKind == .daikin ? DaikinClient.localCapabilities : .fallback
+        self.providerKind = settings.providerKind
+        self.hasToken = Self.isConfigured(settings, provider: settings.providerKind)
+        if !hasToken { connection = .needsSetup }
     }
 
     /// A store with fixed data that never touches the network, for snapshots.
     public init(
         previewStatus: ACStatus?, capabilities: ACCapabilities, connection: ConnectionState = .connected,
-        availableUpdate: AppUpdate? = nil, isReconnecting: Bool = false, devices: [ThinQDevice]? = nil
+        availableUpdate: AppUpdate? = nil, isReconnecting: Bool = false, devices: [ACDevice]? = nil
     ) {
         // Limits that keep the given capabilities as they are.
         let limits = TemperatureLimits(
@@ -124,7 +132,10 @@ public final class ACStore {
         )
         self.settings = InMemorySettings(token: "preview", temperatureLimits: limits)
         self.temperatureLimits = limits
+        self.providerKind = .thinQ
+        self.hasToken = true
         self.makeClient = { ThinQClient(token: $0, clientID: $1) }
+        self.makeProvider = nil
         self.now = Date.init
         self.isPreview = true
         self.updateChecker = nil
@@ -134,9 +145,8 @@ public final class ACStore {
         self.serverStatus = previewStatus
         self.deviceCapabilities = capabilities
         self.connection = connection
-        let preview = ThinQDevice(
-            deviceId: "preview",
-            deviceInfo: .init(deviceType: "DEVICE_AIR_CONDITIONER", modelName: "RAC_056905_WW", alias: "Ar-condicionado")
+        let preview = ACDevice(
+            id: "preview", provider: .thinQ, modelName: "RAC_056905_WW", displayName: "Ar-condicionado"
         )
         self.devices = devices ?? [preview]
         self.device = self.devices.first ?? preview
@@ -159,7 +169,34 @@ public final class ACStore {
     /// What the UI offers: the device's capabilities within the user's temperature limits.
     public var capabilities: ACCapabilities { deviceCapabilities.limited(to: temperatureLimits) }
 
-    public var hasToken: Bool { !(settings.token?.isEmpty ?? true) }
+    public var configuredDaikinAddress: String? { settings.daikinAddress }
+    public var configuredDaikinName: String? { settings.daikinName }
+
+    public func setDaikinName(_ name: String) {
+        guard providerKind == .daikin else { return }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        settings.daikinName = trimmed.isEmpty ? nil : trimmed
+        if let device {
+            let renamed = ACDevice(id: device.id, provider: device.provider, modelName: device.modelName,
+                                   displayName: settings.daikinName ?? "Daikin air conditioner")
+            self.device = renamed
+            devices = [renamed]
+        }
+    }
+
+    private static func isConfigured(_ settings: SettingsStorage, provider: ACProviderKind) -> Bool {
+        switch provider {
+        case .thinQ: return !(settings.token?.isEmpty ?? true)
+        case .daikin:
+            let keyLength = settings.daikinKey.map { Data($0.utf8).count } ?? 0
+            return settings.daikinAddress.map(AppSettings.isValidDaikinAddress) == true && [16, 24, 32].contains(keyLength)
+        }
+    }
+
+    private func refreshConfigurationState() {
+        providerKind = settings.providerKind
+        hasToken = Self.isConfigured(settings, provider: settings.providerKind)
+    }
 
     // MARK: Lifecycle
 
@@ -212,14 +249,18 @@ public final class ACStore {
     /// Saves a new token and connects to the first air conditioner on the account.
     public func connect(token: String) async {
         let token = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        settings.providerKind = .thinQ
+        settings.deviceID = nil
         settings.token = token
+        refreshConfigurationState()
         guard settings.token == token else {
             connection = .needsSetup
             showMessage("Couldn't save the token in the keychain")
             return
         }
-        forgetDevice()
         connection = .loading
+        while isRefreshing { await sleep(Self.switchPollInterval) }
+        forgetDevice()
         await refresh()
         if isActive { startPolling(immediately: false) }
     }
@@ -238,22 +279,70 @@ public final class ACStore {
         deviceCapabilities = .fallback
         capabilitiesLoaded = false
         device = chosen
-        settings.deviceID = chosen.id
+        if chosen.provider == .thinQ { settings.deviceID = chosen.id }
         connection = .loading
         while isRefreshing { await sleep(Self.switchPollInterval) }
         await refresh()
         if isActive { startPolling(immediately: false) }
     }
 
+    public func selectProvider(_ kind: ACProviderKind) async {
+        guard providerKind != kind else { return }
+        settings.providerKind = kind
+        refreshConfigurationState()
+        debounceTask?.cancel()
+        refreshSoonTask?.cancel()
+        queue = []
+        overrides = [:]
+        connection = .loading
+        while isRefreshing { await sleep(Self.switchPollInterval) }
+        forgetDevice()
+        await refresh()
+        if isActive { startPolling(immediately: false) }
+    }
+
+    public func connectDaikin(address: String, key: String) async {
+        let address = address.trimmingCharacters(in: .whitespacesAndNewlines)
+        let key = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        let effectiveKey = key.isEmpty ? (settings.daikinKey ?? "") : key
+        guard AppSettings.isValidDaikinAddress(address), [16, 24, 32].contains(Data(effectiveKey.utf8).count) else {
+            connection = .needsSetup
+            showMessage("Enter a valid local IP address and an integration key of 16, 24 or 32 bytes")
+            return
+        }
+        settings.daikinAddress = address
+        settings.daikinKey = effectiveKey
+        guard settings.daikinKey == effectiveKey else {
+            connection = .needsSetup
+            showMessage("Couldn't save the integration key in the Keychain")
+            return
+        }
+        settings.providerKind = .daikin
+        refreshConfigurationState()
+        connection = .loading
+        while isRefreshing { await sleep(Self.switchPollInterval) }
+        forgetDevice()
+        await refresh()
+        if isActive { startPolling(immediately: false) }
+    }
+
     public func signOut() {
-        settings.token = nil
+        if settings.providerKind == .thinQ {
+            settings.token = nil
+            settings.deviceID = nil
+        } else {
+            settings.daikinKey = nil
+            settings.daikinAddress = nil
+            settings.daikinName = nil
+        }
+        refreshConfigurationState()
         forgetDevice()
         queue = []
         connection = .needsSetup
     }
 
     private func forgetDevice() {
-        settings.deviceID = nil
+        deviceCapabilities = providerKind == .daikin ? DaikinClient.localCapabilities : .fallback
         device = nil
         devices = []
         serverStatus = nil
@@ -265,7 +354,12 @@ public final class ACStore {
 
     public func refresh() async {
         guard !isPreview, !isRefreshing else { return }
-        guard let token = settings.token, !token.isEmpty else {
+        guard hasToken else {
+            connection = .needsSetup
+            return
+        }
+        let client: any ACProvider
+        do { client = try provider() } catch {
             connection = .needsSetup
             return
         }
@@ -273,7 +367,6 @@ public final class ACStore {
         defer { isRefreshing = false }
         if serverStatus == nil { connection = .loading }
 
-        let client = makeClient(token, settings.clientID)
         do {
             let status = try await retryingTransient {
                 let deviceID = try await resolveDevice(client)
@@ -316,15 +409,29 @@ public final class ACStore {
         isReconnecting = false
     }
 
-    private func resolveDevice(_ client: ThinQClient) async throws -> String {
-        if let device, device.id == settings.deviceID { return device.id }
+    private func provider() throws -> any ACProvider {
+        if let makeProvider { return try makeProvider(settings) }
+        switch settings.providerKind {
+        case .thinQ:
+            guard let token = settings.token, !token.isEmpty else { throw DaikinClientError.invalidState }
+            return makeClient(token, settings.clientID)
+        case .daikin:
+            guard let address = settings.daikinAddress, AppSettings.isValidDaikinAddress(address),
+                  let key = settings.daikinKey, !key.isEmpty else { throw DaikinClientError.invalidKey }
+            return try DaikinClient(address: address, key: key, displayName: settings.daikinName)
+        }
+    }
+
+    private func resolveDevice(_ client: any ACProvider) async throws -> String {
+        if let device, device.provider == settings.providerKind, device.id == settings.deviceID { return device.id }
         let devices = try await client.devices().filter(\.isAirConditioner)
-        guard let chosen = devices.first(where: { $0.id == settings.deviceID }) ?? devices.first else {
+        let preferred = settings.providerKind == .thinQ ? devices.first(where: { $0.id == settings.deviceID }) : nil
+        guard let chosen = preferred ?? devices.first else {
             throw ThinQError.api(code: "", message: "No air conditioner found on this LG account")
         }
         self.devices = devices
         device = chosen
-        settings.deviceID = chosen.id
+        if chosen.provider == .thinQ { settings.deviceID = chosen.id }
         capabilitiesLoaded = false
         return chosen.id
     }
@@ -414,8 +521,7 @@ public final class ACStore {
 
     private func send(_ command: ACCommand) async {
         guard !isPreview else { return }
-        guard let token = settings.token, let deviceID = device?.id else { return }
-        let client = makeClient(token, settings.clientID)
+        guard hasToken, let deviceID = device?.id, let client = try? provider() else { return }
         var retried = false
         while true {
             do {
