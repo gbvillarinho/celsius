@@ -560,12 +560,18 @@ final class FlakyCloud: @unchecked Sendable {
         case rateLimited
         /// The unit gets the command but the response never arrives.
         case timeoutAfterApplying(state: String)
+        /// The unit refuses the command for a moment, as some units do with a new target.
+        case notProvidedFeature
+        case failDeviceControl
     }
 
     private let lock = NSLock()
     private var state: String
     private var failures: [String: [Failure]] = [:]
     private var requests: [String] = []
+    private var controlBodies: [String] = []
+    /// The body of every control request, in order.
+    var sentBodies: [String] { lock.withLock { controlBodies } }
     /// What the state becomes once a command succeeds, like the unit changing a setting on its own.
     var stateAfterControl: String? {
         get { lock.withLock { _stateAfterControl } }
@@ -586,6 +592,7 @@ final class FlakyCloud: @unchecked Sendable {
         let path = request.url!.path
         let failure: Failure? = lock.withLock {
             requests.append(path)
+            if path.hasSuffix("/control") { controlBodies.append(String(decoding: request.httpBody ?? Data(), as: UTF8.self)) }
             guard let key = failures.keys.first(where: { path.hasSuffix($0) }), !(failures[key]?.isEmpty ?? true) else { return nil }
             return failures[key]!.removeFirst()
         }
@@ -600,6 +607,10 @@ final class FlakyCloud: @unchecked Sendable {
         case .timeoutAfterApplying(let newState):
             lock.withLock { state = newState }
             throw URLError(.timedOut)
+        case .notProvidedFeature:
+            return reply(400, #"{"error":{"code":"2201","message":"Not provided feature"}}"#)
+        case .failDeviceControl:
+            return reply(400, #"{"error":{"code":"2208","message":"Fail device control"}}"#)
         case nil:
             if path.hasSuffix("/control") {
                 lock.withLock { if let next = _stateAfterControl { state = next } }
@@ -692,6 +703,64 @@ final class SleepLog: @unchecked Sendable {
         #expect(store.transientMessage == nil)
         // The timeout was ambiguous, so the store checked the state first (still off) and then sent again.
         #expect(cloud.count("/control") == 2)
+    }
+
+    @Test(arguments: [FlakyCloud.Failure.notProvidedFeature, .failDeviceControl])
+    func aTargetRefusedForAMomentIsSentAgainAfterAPause(_ refusal: FlakyCloud.Failure) async throws {
+        let cloud = FlakyCloud(state: onState)
+        let sleeps = SleepLog()
+        let store = makeStore(cloud, sleeps: sleeps)
+        await store.refresh()
+        // Seen on a Dual Inverter unit: a target refused once is taken unchanged a moment later.
+        cloud.fail("/control", with: [refusal])
+        store.perform(.targetTemperature(23))
+        try await waitForSends(store)
+        #expect(cloud.sentBodies.count == 2)
+        #expect(try json(Data(cloud.sentBodies[0].utf8)) == json(Data(cloud.sentBodies[1].utf8)))
+        #expect(sleeps.all.contains(ACStore.momentaryRefusalDelays[0]))
+        #expect(store.transientMessage == nil)
+        #expect(store.status?.targetTemperature == 23)
+    }
+
+    @Test func aTargetThatKeepsBeingRefusedShowsTheError() async throws {
+        let cloud = FlakyCloud(state: onState)
+        let store = makeStore(cloud, sleeps: SleepLog())
+        await store.refresh()
+        cloud.fail("/control", with: Array(repeating: .notProvidedFeature, count: ACStore.momentaryRefusalDelays.count + 1))
+        store.perform(.targetTemperature(23))
+        try await waitForSends(store)
+        #expect(cloud.sentBodies.count == ACStore.momentaryRefusalDelays.count + 1)
+        #expect(store.transientMessage == "Not provided feature")
+    }
+
+    @Test func otherCommandsDoNotWaitBehindARefusedTarget() async throws {
+        let cloud = FlakyCloud(state: onState)
+        let sleeps = SleepLog()
+        let store = makeStore(cloud, sleeps: sleeps)
+        await store.refresh()
+        cloud.fail("/control", with: [.notProvidedFeature])
+        store.perform(.targetTemperature(23))
+        store.perform(.fanSpeed("LOW"))
+        try await waitForSends(store)
+        // The fan speed goes out right after the refusal, and the target follows it.
+        #expect(cloud.sentBodies.count == 3)
+        #expect(cloud.sentBodies[1].contains("LOW"))
+        #expect(try json(Data(cloud.sentBodies[0].utf8)) == json(Data(cloud.sentBodies[2].utf8)))
+        #expect(!sleeps.all.contains(ACStore.momentaryRefusalDelays[0]))
+        #expect(store.transientMessage == nil)
+        #expect(store.status?.targetTemperature == 23)
+        #expect(store.status?.fanSpeed == "LOW")
+    }
+
+    @Test func otherCommandsAreNotRetriedOnNotProvidedFeature() async throws {
+        let cloud = FlakyCloud(state: onState)
+        let store = makeStore(cloud, sleeps: SleepLog())
+        await store.refresh()
+        cloud.fail("/control", with: [.notProvidedFeature])
+        store.perform(.fanSpeed("LOW"))
+        try await waitForSends(store)
+        #expect(cloud.sentBodies.count == 1)
+        #expect(store.transientMessage == "Not provided feature")
     }
 
     @Test func aRateLimitedCommandWaitsLongerAndIsNotLost() async throws {

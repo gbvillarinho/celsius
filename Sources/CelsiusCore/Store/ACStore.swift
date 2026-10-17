@@ -67,6 +67,9 @@ public final class ACStore {
     /// Wait before sending a failed command once more, and the longer wait after a rate limit.
     static let commandRetryDelay: Duration = .seconds(1)
     static let rateLimitRetryDelay: Duration = .seconds(2)
+    /// Waits before each new try of a target the unit refused for a moment (see `send`). A Dual Inverter
+    /// unit was seen refusing for about 12 s after a jump from 25 to 18, so the tries cover about 20 s.
+    static let momentaryRefusalDelays: [Duration] = [.milliseconds(1500), .seconds(3), .seconds(5), .seconds(7)]
     /// Pause between two commands in a burst, so LG's rate limit isn't hit.
     static let minimumSendGap: Duration = .milliseconds(400)
     /// How long to wait before asking GitHub for a new release again.
@@ -417,6 +420,7 @@ public final class ACStore {
         guard let token = settings.token, let deviceID = device?.id else { return }
         let client = makeClient(token, settings.clientID)
         var retried = false
+        var momentaryRetries = 0
         while true {
             do {
                 try await client.send(command, deviceID: deviceID)
@@ -442,15 +446,38 @@ public final class ACStore {
                     scheduleRefresh(after: Self.refreshAfterSend)
                     return
                 }
+            } catch let error as ThinQError where command.field == .target && error.isMomentaryRefusal
+                && momentaryRetries < Self.momentaryRefusalDelays.count {
+                // Some units refuse a new target now and then, mostly a few seconds after the previous
+                // change, and take the very same command a moment later.
+                keepOverrideAlive(for: command)
+                if requeueBehindOtherCommands(command) { return }
+                await sleep(Self.momentaryRefusalDelays[momentaryRetries])
+                momentaryRetries += 1
+                // A newer value for the same field is already waiting, so this one is stale.
+                if queue.contains(where: { $0.field == command.field }) { return }
+                if requeueBehindOtherCommands(command) { return }
+                keepOverrideAlive(for: command)
             } catch {
                 if overrides[command.field]?.command == command {
                     overrides[command.field] = nil
+                }
+                if command.field == .target, (error as? ThinQError)?.isMomentaryRefusal == true {
+                    Task { await client.logState(deviceID: deviceID, refused: command) }
                 }
                 handle(error)
                 scheduleRefresh(after: Self.refreshAfterFailure)
                 return
             }
         }
+    }
+
+    /// Waiting to try a refused target again shouldn't hold up other commands, so when any are queued
+    /// they go first and the target follows them. Returns whether the target was put back in the queue.
+    private func requeueBehindOtherCommands(_ command: ACCommand) -> Bool {
+        guard !queue.isEmpty else { return false }
+        if !queue.contains(where: { $0.field == command.field }) { queue.append(command) }
+        return true
     }
 
     private func keepOverrideAlive(for command: ACCommand) {

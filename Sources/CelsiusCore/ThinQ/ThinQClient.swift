@@ -24,6 +24,12 @@ public enum ThinQError: Error, Equatable, Sendable {
         }
     }
 
+    /// "Not provided feature" or "Fail device control". Some units answer this now and then to a target
+    /// they do take, and accept the very same command a moment later.
+    public var isMomentaryRefusal: Bool {
+        if case .api(let code, _) = self { code == "2201" || code == "2208" } else { false }
+    }
+
     public var message: String {
         switch self {
         case .unauthorized: "Token is invalid or expired"
@@ -98,6 +104,16 @@ public struct ThinQClient: Sendable {
 
     public func send(_ command: ACCommand, deviceID: String) async throws {
         _ = try await perform("POST", "devices/\(deviceID)/control", body: command.payload)
+    }
+
+    /// Reads the raw state and logs it next to a command the unit kept refusing, for bug reports.
+    public func logState(deviceID: String, refused command: ACCommand) async {
+        guard let state = try? await perform("GET", "devices/\(deviceID)/state") else { return }
+        Self.log.notice("refused \(Self.text(command.payload), privacy: .public) in state \(Self.text(state), privacy: .public)")
+    }
+
+    static func text(_ value: JSONValue) -> String {
+        (try? JSONEncoder().encode(value)).map { String(decoding: $0, as: UTF8.self) } ?? "?"
     }
 
     func makeRequest(_ method: String, _ path: String, body: JSONValue? = nil) throws -> URLRequest {
