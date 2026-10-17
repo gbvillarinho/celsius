@@ -9,10 +9,14 @@ struct PopoverView: View {
     @State private var showingSettings = false
     @State private var draggingTarget: Double?
 
+    /// Without a usable token the main screen can only show placeholders, so Settings is the only
+    /// useful place to be, and going back from it would land on a screen with nothing to do.
+    private var needsToken: Bool { store.connection == .needsSetup || store.connection == .unauthorized }
+
     var body: some View {
         Group {
-            if showingSettings || store.connection == .needsSetup {
-                SettingsView(store: store, canGoBack: store.connection != .needsSetup) {
+            if showingSettings || needsToken {
+                SettingsView(store: store, canGoBack: !needsToken) {
                     showingSettings = false
                 }
                 .transition(.move(edge: .trailing).combined(with: .opacity))
