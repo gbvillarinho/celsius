@@ -28,14 +28,17 @@ public enum ACCommand: Sendable, Equatable {
         }
     }
 
-    public var payload: JSONValue {
+    public var payload: JSONValue { payload(temperatureKey: ACCapabilities.genericTemperatureKey) }
+
+    /// The body, with a target temperature written to `temperatureKey` (see `ACCapabilities.temperatureKey(forMode:)`).
+    public func payload(temperatureKey: String) -> JSONValue {
         switch self {
         case .power(let on):
             ["operation": ["airConOperationMode": .string(on ? "POWER_ON" : "POWER_OFF")]]
         case .mode(let mode):
             ["airConJobMode": ["currentJobMode": .string(mode)]]
         case .targetTemperature(let value):
-            ["temperature": ["targetTemperature": .number(value), "unit": "C"]]
+            ["temperature": [temperatureKey: .number(value), "unit": "C"]]
         case .fanSpeed(let speed):
             ["airFlow": ["windStrength": .string(speed)]]
         case .swing(let on):

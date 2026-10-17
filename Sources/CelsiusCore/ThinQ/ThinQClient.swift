@@ -24,6 +24,11 @@ public enum ThinQError: Error, Equatable, Sendable {
         }
     }
 
+    /// "Not provided feature": the unit doesn't take the property the command used.
+    public var isNotProvidedFeature: Bool {
+        if case .api(code: "2201", _) = self { true } else { false }
+    }
+
     public var message: String {
         switch self {
         case .unauthorized: "Token is invalid or expired"
@@ -89,15 +94,22 @@ public struct ThinQClient: Sendable {
     }
 
     public func capabilities(deviceID: String) async throws -> ACCapabilities {
-        ACCapabilities(profile: try await perform("GET", "devices/\(deviceID)/profile"))
+        let profile = try await perform("GET", "devices/\(deviceID)/profile")
+        // Which temperature properties a unit accepts varies by model; keep it visible for bug reports.
+        if let temperature = profile["property"]?["temperature"], let data = try? JSONEncoder().encode(temperature) {
+            Self.log.notice("profile temperature: \(String(decoding: data, as: UTF8.self), privacy: .public)")
+        }
+        return ACCapabilities(profile: profile)
     }
 
     public func status(deviceID: String) async throws -> ACStatus {
         ACStatus(json: try await perform("GET", "devices/\(deviceID)/state"))
     }
 
-    public func send(_ command: ACCommand, deviceID: String) async throws {
-        _ = try await perform("POST", "devices/\(deviceID)/control", body: command.payload)
+    public func send(
+        _ command: ACCommand, deviceID: String, temperatureKey: String = ACCapabilities.genericTemperatureKey
+    ) async throws {
+        _ = try await perform("POST", "devices/\(deviceID)/control", body: command.payload(temperatureKey: temperatureKey))
     }
 
     func makeRequest(_ method: String, _ path: String, body: JSONValue? = nil) throws -> URLRequest {

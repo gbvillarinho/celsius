@@ -50,6 +50,27 @@ private func json(_ data: Data?) throws -> JSONValue {
         #expect(caps.supportsEco && caps.supportsSwing && caps.supportsSleep)
     }
 
+    @Test func temperatureGoesToTheModesOwnPropertyLikeLGsSDK() throws {
+        let caps = ACCapabilities(profile: try #require(try fixture("profile")["response"]))
+        #expect(caps.temperatureKeys == ["targetTemperature", "coolTargetTemperature", "autoTargetTemperature"])
+        #expect(caps.temperatureKey(forMode: ACMode.cool) == "coolTargetTemperature")
+        #expect(caps.temperatureKey(forMode: ACMode.auto) == "autoTargetTemperature")
+        #expect(caps.temperatureKey(forMode: ACMode.dry) == "targetTemperature")
+    }
+
+    @Test func unitWithoutAWritableGenericTargetUsesTheCoolOne() {
+        let range: JSONValue = ["max": 30, "min": 16, "step": 1]
+        let profile: JSONValue = ["property": ["temperature": [
+            "targetTemperature": ["type": "range", "mode": .array(["r"]), "value": ["r": range]],
+            "coolTargetTemperature": ["type": "range", "mode": .array(["w"]), "value": ["w": range]],
+        ]]]
+        let caps = ACCapabilities(profile: profile)
+        #expect(caps.temperatureKeys == ["coolTargetTemperature"])
+        #expect(caps.temperatureKey(forMode: ACMode.cool) == "coolTargetTemperature")
+        #expect(caps.temperatureKey(forMode: ACMode.fan) == "coolTargetTemperature")
+        #expect(caps.minTemperature == 16 && caps.maxTemperature == 30)
+    }
+
     @Test func capabilitiesFallBackWhenProfileIsEmpty() {
         #expect(ACCapabilities(profile: .object([:])) == .fallback)
     }
@@ -560,12 +581,17 @@ final class FlakyCloud: @unchecked Sendable {
         case rateLimited
         /// The unit gets the command but the response never arrives.
         case timeoutAfterApplying(state: String)
+        /// The unit doesn't take the property the command used.
+        case notProvidedFeature
     }
 
     private let lock = NSLock()
     private var state: String
     private var failures: [String: [Failure]] = [:]
     private var requests: [String] = []
+    private var controlBodies: [String] = []
+    /// The body of every control request, in order.
+    var sentBodies: [String] { lock.withLock { controlBodies } }
     /// What the state becomes once a command succeeds, like the unit changing a setting on its own.
     var stateAfterControl: String? {
         get { lock.withLock { _stateAfterControl } }
@@ -586,6 +612,7 @@ final class FlakyCloud: @unchecked Sendable {
         let path = request.url!.path
         let failure: Failure? = lock.withLock {
             requests.append(path)
+            if path.hasSuffix("/control") { controlBodies.append(String(decoding: request.httpBody ?? Data(), as: UTF8.self)) }
             guard let key = failures.keys.first(where: { path.hasSuffix($0) }), !(failures[key]?.isEmpty ?? true) else { return nil }
             return failures[key]!.removeFirst()
         }
@@ -600,6 +627,8 @@ final class FlakyCloud: @unchecked Sendable {
         case .timeoutAfterApplying(let newState):
             lock.withLock { state = newState }
             throw URLError(.timedOut)
+        case .notProvidedFeature:
+            return reply(400, #"{"error":{"code":"2201","message":"Not provided feature"}}"#)
         case nil:
             if path.hasSuffix("/control") {
                 lock.withLock { if let next = _stateAfterControl { state = next } }
@@ -692,6 +721,37 @@ final class SleepLog: @unchecked Sendable {
         #expect(store.transientMessage == nil)
         // The timeout was ambiguous, so the store checked the state first (still off) and then sent again.
         #expect(cloud.count("/control") == 2)
+    }
+
+    @Test func aTargetTheUnitDoesNotTakeIsSentToTheOtherPropertyAndRemembered() async throws {
+        let cloud = FlakyCloud(state: onState)
+        let store = makeStore(cloud, sleeps: SleepLog())
+        await store.refresh()
+        // No profile, so the generic property goes first; this unit only takes the cool one.
+        cloud.fail("/control", with: [.notProvidedFeature])
+        store.perform(.targetTemperature(23))
+        try await waitForSends(store)
+        #expect(cloud.sentBodies.count == 2)
+        #expect(cloud.sentBodies[0].contains("\"targetTemperature\":23"))
+        #expect(cloud.sentBodies[1].contains("\"coolTargetTemperature\":23"))
+        #expect(store.transientMessage == nil)
+        #expect(store.status?.targetTemperature == 23)
+
+        store.perform(.targetTemperature(22))
+        try await waitForSends(store)
+        #expect(cloud.sentBodies.count == 3)
+        #expect(cloud.sentBodies[2].contains("\"coolTargetTemperature\":22"))
+    }
+
+    @Test func aTargetRefusedByEveryPropertyShowsTheError() async throws {
+        let cloud = FlakyCloud(state: onState)
+        let store = makeStore(cloud, sleeps: SleepLog())
+        await store.refresh()
+        cloud.fail("/control", with: [.notProvidedFeature, .notProvidedFeature])
+        store.perform(.targetTemperature(23))
+        try await waitForSends(store)
+        #expect(cloud.sentBodies.count == 2)
+        #expect(store.transientMessage == "Not provided feature")
     }
 
     @Test func aRateLimitedCommandWaitsLongerAndIsNotLost() async throws {

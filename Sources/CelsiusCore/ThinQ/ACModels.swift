@@ -153,9 +153,17 @@ public struct ACCapabilities: Sendable, Equatable {
     public var supportsEco: Bool
     public var supportsSwing: Bool
     public var supportsSleep: Bool
+    /// The writable target properties of the `temperature` resource. Units differ: some take
+    /// `targetTemperature` in every mode, others only the per-mode ones such as `coolTargetTemperature`
+    /// and answer "Not provided feature" to the generic one.
+    public var temperatureKeys: Set<String>
 
     /// Whether the popover's row of round toggles has anything to show. Add new toggles here.
     public var hasToggles: Bool { supportsEco }
+
+    public static let genericTemperatureKey = "targetTemperature"
+    /// In order of preference for reading the range.
+    static let temperatureKeyCandidates = [genericTemperatureKey, "coolTargetTemperature", "autoTargetTemperature", "heatTargetTemperature"]
 
     public static let fallback = ACCapabilities(
         modes: [ACMode.cool, ACMode.dry, ACMode.fan, ACMode.auto],
@@ -166,7 +174,8 @@ public struct ACCapabilities: Sendable, Equatable {
 
     public init(
         modes: [String], fanSpeeds: [String], minTemperature: Double, maxTemperature: Double,
-        temperatureStep: Double, supportsEco: Bool, supportsSwing: Bool, supportsSleep: Bool
+        temperatureStep: Double, supportsEco: Bool, supportsSwing: Bool, supportsSleep: Bool,
+        temperatureKeys: Set<String> = [genericTemperatureKey]
     ) {
         self.modes = modes
         self.fanSpeeds = fanSpeeds
@@ -176,6 +185,30 @@ public struct ACCapabilities: Sendable, Equatable {
         self.supportsEco = supportsEco
         self.supportsSwing = supportsSwing
         self.supportsSleep = supportsSleep
+        self.temperatureKeys = temperatureKeys
+    }
+
+    /// The mode's own target property, if the mode has one.
+    static func modeTemperatureKey(_ mode: String?) -> String? {
+        switch mode {
+        case ACMode.cool: "coolTargetTemperature"
+        case ACMode.heat: "heatTargetTemperature"
+        case ACMode.auto: "autoTargetTemperature"
+        default: nil
+        }
+    }
+
+    /// Where to write a new target in `mode`: the mode's own property when the unit has it, as LG's SDK
+    /// does, otherwise the generic one.
+    public func temperatureKey(forMode mode: String?) -> String {
+        if let own = Self.modeTemperatureKey(mode), temperatureKeys.contains(own) { return own }
+        if temperatureKeys.contains(Self.genericTemperatureKey) { return Self.genericTemperatureKey }
+        return temperatureKeys.sorted().first ?? Self.genericTemperatureKey
+    }
+
+    /// The other property to try after the unit refused the ones in `tried`.
+    public func alternativeTemperatureKey(forMode mode: String?, excluding tried: Set<String>) -> String? {
+        [Self.modeTemperatureKey(mode), Self.genericTemperatureKey].compactMap { $0 }.first { !tried.contains($0) }
     }
 
     public init(profile: JSONValue) {
@@ -197,7 +230,10 @@ public struct ACCapabilities: Sendable, Equatable {
         modes = writableStrings("airConJobMode", "currentJobMode") ?? fallback.modes
         fanSpeeds = writableStrings("airFlow", "windStrength") ?? fallback.fanSpeeds
 
-        let range = writable("temperature", "targetTemperature")?["value"]?["w"]
+        let keys = Self.temperatureKeyCandidates.filter { writable("temperature", $0) != nil }
+        temperatureKeys = keys.isEmpty ? [Self.genericTemperatureKey] : Set(keys)
+
+        let range = keys.lazy.compactMap { writable("temperature", $0)?["value"]?["w"] }.first
         if let min = range?["min"]?.double, let max = range?["max"]?.double, min < max {
             minTemperature = min
             maxTemperature = max

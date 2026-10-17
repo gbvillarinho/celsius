@@ -81,6 +81,8 @@ public final class ACStore {
     @ObservationIgnored private var failureStreak = 0
     @ObservationIgnored private var lastUpdateCheck: Date?
     @ObservationIgnored private var capabilitiesLoaded = false
+    /// The temperature property the unit accepted, per mode, once one had to be found by trying.
+    @ObservationIgnored private var learnedTemperatureKeys: [String: String] = [:]
     @ObservationIgnored private var isRefreshing = false
     @ObservationIgnored private var isActive = false
     @ObservationIgnored private var queue: [ACCommand] = []
@@ -237,6 +239,7 @@ public final class ACStore {
         serverStatus = nil
         deviceCapabilities = .fallback
         capabilitiesLoaded = false
+        learnedTemperatureKeys = [:]
         device = chosen
         settings.deviceID = chosen.id
         connection = .loading
@@ -259,6 +262,7 @@ public final class ACStore {
         serverStatus = nil
         overrides = [:]
         capabilitiesLoaded = false
+        learnedTemperatureKeys = [:]
     }
 
     // MARK: Refresh
@@ -417,9 +421,13 @@ public final class ACStore {
         guard let token = settings.token, let deviceID = device?.id else { return }
         let client = makeClient(token, settings.clientID)
         var retried = false
+        let mode = status?.mode
+        var temperatureKey = learnedTemperatureKeys[mode ?? ""] ?? deviceCapabilities.temperatureKey(forMode: mode)
+        var triedKeys: Set<String> = []
         while true {
             do {
-                try await client.send(command, deviceID: deviceID)
+                try await client.send(command, deviceID: deviceID, temperatureKey: temperatureKey)
+                if command.field == .target, !triedKeys.isEmpty { learnedTemperatureKeys[mode ?? ""] = temperatureKey }
                 noteSuccess()
                 keepOverrideAlive(for: command)
                 if command.field == .eco {
@@ -443,6 +451,15 @@ public final class ACStore {
                     return
                 }
             } catch {
+                // The profile doesn't always say which temperature property the unit really takes, so
+                // before giving up try the other one (the mode's own or the generic one).
+                if command.field == .target, (error as? ThinQError)?.isNotProvidedFeature == true {
+                    triedKeys.insert(temperatureKey)
+                    if let other = deviceCapabilities.alternativeTemperatureKey(forMode: mode, excluding: triedKeys) {
+                        temperatureKey = other
+                        continue
+                    }
+                }
                 if overrides[command.field]?.command == command {
                     overrides[command.field] = nil
                 }
