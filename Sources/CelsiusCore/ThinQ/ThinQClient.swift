@@ -59,23 +59,35 @@ public enum ThinQError: Error, Equatable, Sendable {
 public struct ThinQClient: Sendable {
     public typealias Transport = @Sendable (URLRequest) async throws -> (Data, URLResponse)
 
-    /// Brazil is served by the Americas region.
+    /// Every country in `countries` is served by the Americas region.
     public static let baseURL = URL(string: "https://api-aic.lgthinq.com/")!
-    public static let country = "BR"
+    public static let defaultCountry = "BR"
+    /// The Americas countries an LG account can belong to, as (name, code), sent as `x-country`.
+    public static let countries: [(String, String)] = [
+        ("Brazil", "BR"), ("United States", "US"), ("Argentina", "AR"), ("Canada", "CA"), ("Chile", "CL"),
+        ("Colombia", "CO"), ("Mexico", "MX"), ("Paraguay", "PY"), ("Peru", "PE"), ("Uruguay", "UY"),
+    ]
     static let apiKey = "v6GFvkweNo7DK7yD3ylIZ9w52aKBU0eJ7wLXkSR3"
 
     private static let log = Logger(subsystem: "com.gabrielvillarinho.celsius", category: "api")
 
     let token: String
     let clientID: String
+    let country: String
     let transport: Transport
 
-    public init(token: String, clientID: String, transport: Transport? = nil) {
+    public init(token: String, clientID: String, country: String = defaultCountry, transport: Transport? = nil) {
         self.token = token
         self.clientID = clientID
+        self.country = country
         self.transport = transport ?? { request in
             try await URLSession.shared.data(for: request)
         }
+    }
+
+    /// The same client, speaking for an account in another country.
+    public func forCountry(_ country: String) -> ThinQClient {
+        ThinQClient(token: token, clientID: clientID, country: country, transport: transport)
     }
 
     public func devices() async throws -> [ThinQDevice] {
@@ -105,7 +117,7 @@ public struct ThinQClient: Sendable {
         request.httpMethod = method
         request.timeoutInterval = 15
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        request.setValue(Self.country, forHTTPHeaderField: "x-country")
+        request.setValue(country, forHTTPHeaderField: "x-country")
         request.setValue(Self.messageID(), forHTTPHeaderField: "x-message-id")
         request.setValue(clientID, forHTTPHeaderField: "x-client-id")
         request.setValue(Self.apiKey, forHTTPHeaderField: "x-api-key")
@@ -134,7 +146,8 @@ public struct ThinQClient: Sendable {
 
         if let error = envelope?["error"] {
             let code = error["code"]?.string ?? ""
-            Self.log.error("\(method, privacy: .public) \(path, privacy: .public) status \(status, privacy: .public) code \(code, privacy: .public)")
+            let message = error["message"]?.string ?? ""
+            Self.log.error("\(method, privacy: .public) \(path, privacy: .public) country \(country, privacy: .public) status \(status, privacy: .public) code \(code, privacy: .public): \(message, privacy: .public)")
             throw ThinQError.from(
                 code: code,
                 message: error["message"]?.string ?? "Request failed",

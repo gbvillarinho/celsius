@@ -56,6 +56,8 @@ public protocol SettingsStorage: AnyObject {
     var clientID: String { get }
     var deviceID: String? { get set }
     var temperatureLimits: TemperatureLimits { get set }
+    /// The country of the LG account, sent as `x-country`.
+    var country: String { get set }
 }
 
 public final class AppSettings: SettingsStorage {
@@ -100,6 +102,11 @@ public final class AppSettings: SettingsStorage {
         }
         set { defaults.set(try? JSONEncoder().encode(newValue), forKey: "temperatureLimits") }
     }
+
+    public var country: String {
+        get { defaults.string(forKey: "country") ?? ThinQClient.defaultCountry }
+        set { defaults.set(newValue, forKey: "country") }
+    }
 }
 
 public final class InMemorySettings: SettingsStorage {
@@ -107,6 +114,7 @@ public final class InMemorySettings: SettingsStorage {
     public var clientID = "celsius-test"
     public var deviceID: String?
     public var temperatureLimits: TemperatureLimits
+    public var country = ThinQClient.defaultCountry
 
     public init(token: String? = nil, deviceID: String? = nil, temperatureLimits: TemperatureLimits = .standard) {
         self.token = token

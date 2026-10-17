@@ -30,7 +30,7 @@ speed, and that's it. No phone needed.
 
 - A Mac running macOS 15 or later
 - An LG air conditioner that already works in the LG ThinQ phone app
-- An LG account in Brazil (the app is set up for that region)
+- An LG account in Brazil or another country in LG's Americas region (the app was built and tested in Brazil)
 
 ## Install
 
@@ -90,6 +90,8 @@ Celsius needs a free access token from LG to talk to your air conditioner. It ta
 2. Paste the token (the clipboard button next to the field does it for you) and click Connect.
 3. Your air conditioner appears and you can control it.
 
+If your LG account isn't from Brazil, pick its country under Account country in Settings.
+
 The token is stored in your Mac's Keychain, on this Mac only. It is never written to a file and
 never sent anywhere except LG.
 
@@ -133,7 +135,8 @@ LG's servers take a few seconds to confirm a change. Celsius shows the new value
 it a moment later.
 
 **Does it work in other countries?**
-Not yet. It's set up for Brazil.
+In the Americas, probably: pick your account's country under Account country in Settings. It has only
+been tested in Brazil. Accounts outside the Americas use other LG servers and aren't supported yet.
 
 **Does it work with any LG air conditioner?**
 It was built and tested with one model. Others should work, but some controls may be missing or behave
@@ -192,8 +195,9 @@ Layout:
 - `Tests/CelsiusCoreTests`: Swift Testing suites; fixtures are real responses from the unit, with the device ID replaced
 
 The app uses LG's official [ThinQ Connect API](https://connect-pat.lgthinq.com) with a Personal Access
-Token. The region is fixed to Brazil (`x-country: BR`, host `api-aic.lgthinq.com`); for another country,
-adjust `ThinQClient`. See [CLAUDE.md](CLAUDE.md) for architecture details and conventions.
+Token. The host is LG's Americas one (`api-aic.lgthinq.com`) and `x-country` is the account country
+chosen in Settings (Brazil by default); a country from another region would also need its host in
+`ThinQClient`. See [CLAUDE.md](CLAUDE.md) for architecture details and conventions.
 
 ## License
 

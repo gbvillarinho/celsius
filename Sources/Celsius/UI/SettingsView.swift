@@ -89,6 +89,8 @@ struct SettingsView: View {
                             .foregroundStyle(Theme.warning)
                     }
 
+                    countryPicker
+
                     Link(destination: Self.tokenPortal) {
                         Label("Create a token at connect-pat.lgthinq.com", systemImage: "arrow.up.right.square")
                             .font(.system(size: 12))
@@ -154,6 +156,24 @@ struct SettingsView: View {
     }
 
     private static let unitPopUpWidth: CGFloat = 140
+
+    /// LG's API expects the account's country in `x-country`; LG's SDK and Home Assistant ask for it too.
+    private var countryPicker: some View {
+        HStack {
+            Text("Account country")
+                .font(.system(size: 13))
+            Spacer()
+            PopUpButton(
+                options: ThinQClient.countries.map { (title: $0.0, value: $0.1) },
+                selection: Binding(
+                    get: { store.country },
+                    set: { code in Task<Void, Never> { await store.changeCountry(to: code) } }
+                )
+            )
+            .frame(width: Self.unitPopUpWidth)
+            .accessibilityLabel("Account country")
+        }
+    }
 
     /// Minimum and maximum steppers bounded by what the device accepts, plus half degrees when it has them.
     private var temperatureLimits: some View {
