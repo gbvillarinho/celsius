@@ -95,6 +95,8 @@ struct PopoverView: View {
     private var deviceTitle: some View {
         let name = store.device?.displayName ?? "Air conditioner"
         let title = Text(name).font(.system(size: 13, weight: .semibold))
+            .lineLimit(1)
+            .truncationMode(.tail)
         if store.devices.count > 1 {
             Menu {
                 ForEach(store.devices) { device in
@@ -121,7 +123,7 @@ struct PopoverView: View {
             .menuStyle(.button)
             .buttonStyle(.plain)
             .menuIndicator(.hidden)
-            .fixedSize()
+            .fixedSize(horizontal: false, vertical: true)
             .accessibilityLabel("Unit")
             .accessibilityValue(name)
         } else {
