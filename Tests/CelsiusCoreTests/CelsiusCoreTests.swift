@@ -189,6 +189,17 @@ private func stubTransport(
         #expect(try json(request.httpBody) == ACCommand.eco(true).payload)
     }
 
+    @Test func sendsTheChosenCountry() async throws {
+        let recorder = RecordedRequests()
+        let client = ThinQClient(token: "tok", clientID: "c", transport: stubTransport(body: #"{"response":[]}"#, recorder: recorder))
+            .forCountry("US")
+        _ = try await client.devices()
+
+        let request = try #require(recorder.all.first)
+        #expect(request.value(forHTTPHeaderField: "x-country") == "US")
+        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer tok")
+    }
+
     @Test func messageIDIsURLSafe() {
         for _ in 0..<50 {
             let id = ThinQClient.messageID()

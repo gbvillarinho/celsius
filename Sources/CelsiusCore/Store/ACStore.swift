@@ -38,6 +38,9 @@ public final class ACStore {
         didSet { settings.temperatureLimits = temperatureLimits }
     }
 
+    /// The country of the LG account. Change it with `changeCountry(to:)`.
+    public private(set) var country: String
+
     /// Polls faster while the popover is open.
     public var isPopoverVisible = false {
         didSet {
@@ -109,6 +112,7 @@ public final class ACStore {
         self.now = now
         self.isPreview = false
         self.temperatureLimits = settings.temperatureLimits
+        self.country = settings.country
         if settings.token?.isEmpty ?? true { connection = .needsSetup }
     }
 
@@ -124,6 +128,7 @@ public final class ACStore {
         )
         self.settings = InMemorySettings(token: "preview", temperatureLimits: limits)
         self.temperatureLimits = limits
+        self.country = ThinQClient.defaultCountry
         self.makeClient = { ThinQClient(token: $0, clientID: $1) }
         self.now = Date.init
         self.isPreview = true
@@ -245,6 +250,18 @@ public final class ACStore {
         if isActive { startPolling(immediately: false) }
     }
 
+    /// Talks to LG as an account from another country and reads the state again, keeping the token.
+    public func changeCountry(to code: String) async {
+        guard code != country else { return }
+        country = code
+        settings.country = code
+        guard hasToken else { return }
+        connection = .loading
+        while isRefreshing { await sleep(Self.switchPollInterval) }
+        await refresh()
+        if isActive { startPolling(immediately: false) }
+    }
+
     public func signOut() {
         settings.token = nil
         forgetDevice()
@@ -273,7 +290,7 @@ public final class ACStore {
         defer { isRefreshing = false }
         if serverStatus == nil { connection = .loading }
 
-        let client = makeClient(token, settings.clientID)
+        let client = makeClient(token, settings.clientID).forCountry(country)
         do {
             let status = try await retryingTransient {
                 let deviceID = try await resolveDevice(client)
@@ -415,7 +432,7 @@ public final class ACStore {
     private func send(_ command: ACCommand) async {
         guard !isPreview else { return }
         guard let token = settings.token, let deviceID = device?.id else { return }
-        let client = makeClient(token, settings.clientID)
+        let client = makeClient(token, settings.clientID).forCountry(country)
         var retried = false
         while true {
             do {

@@ -51,7 +51,7 @@ There are two targets with a strict split:
 - Device state and profile documents vary per model, so they are decoded into a loosely typed JSON enum and then read defensively into flat Swift structs. Missing data falls back to sensible defaults. Capabilities come from the profile's *writable* properties, with a static fallback when the profile is empty.
 - Commands are an enum. Each case knows its coalescing field, its JSON payload (`{resource: {property: value}}`), and how it changes a local status (`applying`). When you add a command, all three must be updated together.
 - API values such as job modes and fan speeds stay raw strings so unknown values survive. Display names, icons and colors are mapped in the UI layer.
-- Region is fixed to Brazil (`x-country: BR`, Americas host). The `x-api-key` in the client is LG's public, SDK-wide key, not a secret. The user's PAT lives only in the login keychain (service `com.gabrielvillarinho.celsius`).
+- The host is fixed to the Americas region (`api-aic`). `x-country` is the account country from settings (`ThinQClient.countries`, Brazil by default). The `x-api-key` in the client is LG's public, SDK-wide key, not a secret. The user's PAT lives only in the login keychain (service `com.gabrielvillarinho.celsius`).
 - API error codes are mapped to a small error enum that drives connection state: unauthorized → setup prompt, offline/network → offline state, everything else → a transient footer message.
 - The sleep timer counts down from when the device accepts it, so the minutes left are bucketed up to whole hours (95 min → the 2 h timer). Use the status's computed bucket instead of redoing the math.
 
