@@ -23,6 +23,7 @@ enum DevTools {
             ("auto-swing", ACStatus(isOn: true, mode: ACMode.auto, currentTemperature: 27, targetTemperature: 23.5, fanSpeed: "MID", swing: true, eco: true), .connected),
             ("offline", ACStatus(isOn: true, mode: ACMode.cool, currentTemperature: 26, targetTemperature: 18, fanSpeed: "HIGH", swing: false, eco: false), .offline("The air conditioner is offline")),
             ("setup", nil, .needsSetup),
+            ("unauthorized", nil, .unauthorized),
         ]
         for (name, status, connection) in scenarios {
             let store = ACStore(previewStatus: status, capabilities: caps, connection: connection)
