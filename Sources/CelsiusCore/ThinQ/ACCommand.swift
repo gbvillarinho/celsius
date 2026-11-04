@@ -2,7 +2,7 @@ import Foundation
 
 /// The piece of state a command changes. Commands for the same field replace each other.
 public enum ACField: Hashable, Sendable, CaseIterable {
-    case power, mode, target, fan, swing, eco, sleep
+    case power, mode, target, fan, swing, eco, powerful, sleep
 }
 
 /// A control command, encoded as the `{resource: {property: value}}` body of `POST devices/{id}/control`.
@@ -13,6 +13,8 @@ public enum ACCommand: Sendable, Equatable {
     case fanSpeed(String)
     case swing(Bool)
     case eco(Bool)
+    /// Daikin PowerChill (boost) preset.
+    case powerful(Bool)
     /// Hours until the unit turns off; 0 cancels the sleep timer.
     case sleep(hours: Int)
 
@@ -24,6 +26,7 @@ public enum ACCommand: Sendable, Equatable {
         case .fanSpeed: .fan
         case .swing: .swing
         case .eco: .eco
+        case .powerful: .powerful
         case .sleep: .sleep
         }
     }
@@ -42,6 +45,8 @@ public enum ACCommand: Sendable, Equatable {
             ["windDirection": ["rotateUpDown": .bool(on)]]
         case .eco(let on):
             ["powerSave": ["powerSaveEnabled": .bool(on)]]
+        case .powerful:
+            [:]
         case .sleep(let hours) where hours > 0:
             ["sleepTimer": ["relativeHourToStop": .number(Double(hours)), "relativeMinuteToStop": 0]]
         case .sleep:

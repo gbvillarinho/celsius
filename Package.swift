@@ -6,10 +6,12 @@ let package = Package(
     platforms: [.macOS(.v15)],
     products: [
         .executable(name: "Celsius", targets: ["Celsius"]),
+        .executable(name: "daikin-diagnose", targets: ["DaikinDiagnostics"]),
     ],
     targets: [
         .target(name: "CelsiusCore"),
         .executableTarget(name: "Celsius", dependencies: ["CelsiusCore"]),
+        .executableTarget(name: "DaikinDiagnostics", dependencies: ["CelsiusCore"]),
         .testTarget(
             name: "CelsiusCoreTests",
             dependencies: ["CelsiusCore"],

@@ -9,8 +9,7 @@
 [![Stars](https://img.shields.io/github/stars/gbvillarinho/celsius?style=flat-square)](https://github.com/gbvillarinho/celsius/stargazers)
 [![Last commit](https://img.shields.io/github/last-commit/gbvillarinho/celsius?style=flat-square)](https://github.com/gbvillarinho/celsius/commits/main)
 
-Control your LG air conditioner from the Mac menu bar. Click the icon, pick a temperature, mode or fan
-speed, and that's it. No phone needed.
+Control an LG ThinQ air conditioner or a compatible Daikin unit on your local network from the Mac menu bar. Click the icon, pick a temperature, mode or fan speed, and that's it.
 
 <p align="center">
   <img src="docs/demo.gif" alt="The Celsius popover in the macOS menu bar" width="560">
@@ -23,14 +22,14 @@ speed, and that's it. No phone needed.
 - Sets the temperature, with a range you choose
 - Sets the fan speed and the air swing
 - Turns Eco mode on and off
-- Sets a sleep timer that turns the unit off after a few hours
+- Sets a sleep timer on supported LG units
 - Opens when you log in, if you want it to
 
 ## What you need
 
 - A Mac running macOS 15 or later
-- An LG air conditioner that already works in the LG ThinQ phone app
-- An LG account in Brazil (the app is set up for that region)
+- An LG ThinQ air conditioner, or a supported Daikin Smart AC connected to the same local network
+- An LG account in Brazil for LG ThinQ (the LG integration is set up for that region)
 
 ## Install
 
@@ -93,6 +92,27 @@ Celsius needs a free access token from LG to talk to your air conditioner. It ta
 The token is stored in your Mac's Keychain, on this Mac only. It is never written to a file and
 never sent anywhere except LG.
 
+### Daikin Smart AC (local network)
+
+In Settings, choose **Daikin**. Enter the unit's local IP address and its integration key, then click
+**Connect Daikin**. The key can be created or viewed in the Daikin Smart AC app under **Menu →
+Integrations → Home Assistant**. Find the unit's IP address in your router's connected-device list;
+reserve it there so it does not change.
+
+Celsius stores the Daikin key in the macOS Keychain on this Mac. It never asks for your Daikin account
+password and does not use Daikin's cloud service. Your Mac must be on the same local network as the unit;
+when it cannot reach the configured IP, Celsius shows the unit as offline. Remote control is not
+available.
+
+The documented local protocol supports power, mode, target temperature, fan speed, vertical swing and
+Eco. It reports timer fields, but the public command format does not document setting or cancelling a
+timer, so Celsius leaves the Daikin timer control unavailable until those operations are confirmed.
+
+The community reference project lists **FTKP09S5VL** as “should work,” not confirmed. Its published
+example reports firmware `p1.0.3.28`; this implementation has not been validated against the user's
+firmware `p1.0.3.29` or physical unit. See the [protocol reference](https://github.com/crossworth/daikin)
+for model and protocol details.
+
 ## Updating
 
 Celsius checks for a new version about once a day. When there is one, a blue dot appears next to
@@ -146,8 +166,7 @@ Open Settings in the app, click Sign out, then paste a new token.
 
 ## For developers
 
-Celsius is a Swift Package (no Xcode project). You only need the Command Line Tools
-(`xcode-select --install`) and Swift 6.2 or later.
+Celsius is a Swift Package (no Xcode project). You need the Command Line Tools (`xcode-select --install`) and a Swift 6.2 toolchain with a matching macOS SDK.
 
 Build and install from source:
 

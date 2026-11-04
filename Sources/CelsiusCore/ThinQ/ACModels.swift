@@ -51,6 +51,8 @@ public struct ACStatus: Sendable, Equatable {
     public var fanSpeed: String?
     public var swing: Bool?
     public var eco: Bool?
+    public var powerful: Bool?
+    public var firmwareVersion: String?
     /// Minutes until the sleep timer turns the unit off; `nil` when the timer is off.
     public var sleepMinutesLeft: Int?
     public var hasError: Bool
@@ -58,7 +60,8 @@ public struct ACStatus: Sendable, Equatable {
     public init(
         isOn: Bool, mode: String? = nil, currentTemperature: Double? = nil,
         targetTemperature: Double? = nil, fanSpeed: String? = nil, swing: Bool? = nil,
-        eco: Bool? = nil, sleepMinutesLeft: Int? = nil, hasError: Bool = false
+        eco: Bool? = nil, powerful: Bool? = nil, firmwareVersion: String? = nil,
+        sleepMinutesLeft: Int? = nil, hasError: Bool = false
     ) {
         self.isOn = isOn
         self.mode = mode
@@ -67,6 +70,8 @@ public struct ACStatus: Sendable, Equatable {
         self.fanSpeed = fanSpeed
         self.swing = swing
         self.eco = eco
+        self.powerful = powerful
+        self.firmwareVersion = firmwareVersion
         self.sleepMinutesLeft = sleepMinutesLeft
         self.hasError = hasError
     }
@@ -115,7 +120,12 @@ public struct ACStatus: Sendable, Equatable {
         case .targetTemperature(let value): copy.targetTemperature = value
         case .fanSpeed(let speed): copy.fanSpeed = speed
         case .swing(let on): copy.swing = on
-        case .eco(let on): copy.eco = on
+        case .eco(let on):
+            copy.eco = on
+            if on { copy.powerful = false }
+        case .powerful(let on):
+            copy.powerful = on
+            if on { copy.eco = false }
         case .sleep(let hours):
             // A running timer within the requested hour already confirms the command.
             if hours == 0 {
@@ -153,6 +163,7 @@ public struct ACCapabilities: Sendable, Equatable {
     public var supportsEco: Bool
     public var supportsSwing: Bool
     public var supportsSleep: Bool
+    public var supportsPowerful: Bool
 
     /// Whether the popover's row of round toggles has anything to show. Add new toggles here.
     public var hasToggles: Bool { supportsEco }
@@ -161,12 +172,13 @@ public struct ACCapabilities: Sendable, Equatable {
         modes: [ACMode.cool, ACMode.dry, ACMode.fan, ACMode.auto],
         fanSpeeds: ["LOW", "MID", "HIGH", "AUTO"],
         minTemperature: 18, maxTemperature: 30, temperatureStep: 1,
-        supportsEco: true, supportsSwing: true, supportsSleep: true
+        supportsEco: true, supportsSwing: true, supportsSleep: true, supportsPowerful: false
     )
 
     public init(
         modes: [String], fanSpeeds: [String], minTemperature: Double, maxTemperature: Double,
-        temperatureStep: Double, supportsEco: Bool, supportsSwing: Bool, supportsSleep: Bool
+        temperatureStep: Double, supportsEco: Bool, supportsSwing: Bool, supportsSleep: Bool,
+        supportsPowerful: Bool = false
     ) {
         self.modes = modes
         self.fanSpeeds = fanSpeeds
@@ -176,6 +188,7 @@ public struct ACCapabilities: Sendable, Equatable {
         self.supportsEco = supportsEco
         self.supportsSwing = supportsSwing
         self.supportsSleep = supportsSleep
+        self.supportsPowerful = supportsPowerful
     }
 
     public init(profile: JSONValue) {
@@ -212,6 +225,7 @@ public struct ACCapabilities: Sendable, Equatable {
         supportsEco = hasProfile ? writable("powerSave", "powerSaveEnabled") != nil : fallback.supportsEco
         supportsSwing = hasProfile ? writable("windDirection", "rotateUpDown") != nil : fallback.supportsSwing
         supportsSleep = hasProfile ? writable("sleepTimer", "relativeHourToStop") != nil : fallback.supportsSleep
+        supportsPowerful = false
     }
 
     /// Narrows the temperature range and step to the user's limits, never beyond what the device accepts.

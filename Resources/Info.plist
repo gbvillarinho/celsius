@@ -28,6 +28,8 @@
 	<string>15.0</string>
 	<key>LSUIElement</key>
 	<true/>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Celsius uses your local network to read and control a configured Daikin air conditioner.</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 </dict>
